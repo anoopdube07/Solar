@@ -129,4 +129,15 @@ Key fields (indicative):
 - DELAYED: SLA configured (>0) AND current date > configured stage due date. (SLA=0 → never delayed.)
 - Post-closure indicators: "FIRST PAYMENT NOT RECEIVED", "FINAL PAYMENT PENDING" (display only).
 
-## P. Genuine Business Ambiguities (see chat)
+## P. Resolved Business Decisions (FINAL)
+1. Advance Verification ≠ First Payment. Advance Verification is an Accounts 1 operational task; completing it does NOT confirm First Payment. Accounts 1 can complete with First Payment unconfirmed. First Payment CONFIRMED required only to START DISPATCH.
+2. Only Accounts create/update/confirm payments (via Payment Monitor). Dispatch cannot edit; sees derived PAYMENT BLOCKED / READY FOR DISPATCH. Confirming First Payment auto-flips Dispatch to READY FOR DISPATCH.
+3. No ECP escalation in V1. Escalation is Lead-stage only (Lead Team → Owner → return → Lead Team). ECP delays surfaced via dashboards/workload/DELAYED indicators only.
+4. Site Visit assignment: Process Owner/Manager normally; OWNER may assign as override. Lead Team cannot assign. Installation performs assigned visits only.
+5. Accounts 2 completion: "Final Payment Follow-up" is the operational task. Marking it COMPLETED → ECP CLOSED — SUCCESSFULLY COMPLETED. Final Payment CONFIRMED NOT required; may stay PENDING; show "FINAL PAYMENT PENDING" post-closure indicator until confirmed.
+6. SLA: Stage Due Date = Stage Entry Date + configured SLA days. SLA=0 → not configured → never DELAYED. SLA>0 and today > due date → DELAYED (derived indicator, not a stage).
+7. One ECP per Lead for entire lifetime. Closed/Cancelled ECP → Lead cannot create another. Returning customer = NEW LEAD. Never duplicate ECP from original Lead.
+8. V1: ONE USER = ONE ROLE = ONE TEAM (no multi-team). Only OWNER can create/deactivate users, change role, change team.
+
+### Lead Return Rule (FINAL)
+After (A) Site Visit Completed, (B) Owner Escalation Return, (C) Owner Reopen LOST, the Lead auto-appears in LEAD TEAM's ACTION REQUIRED queue. Lead detail shows return reason (SITE VISIT COMPLETED / OWNER RETURNED / REOPENED). Lead Team again gets all five actions and makes the next decision. Neither Installation nor Owner decides on Lead Team's behalf.
