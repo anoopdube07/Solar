@@ -69,6 +69,7 @@ export const DERIVED_LABELS = {
   PAYMENT_BLOCKED: "Payment Blocked",
   READY_FOR_DISPATCH: "Ready for Dispatch",
   DISPATCH_IN_PROCESS: "Dispatch In Process",
+  AWAITING_ASSIGNMENT: "Awaiting Install Assignment",
   READY_TO_INSTALL: "Ready to Install",
   IN_PROCESS: "Installation In Process",
   COMPLETED: "Installation Completed",

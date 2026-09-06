@@ -4,7 +4,7 @@ B = "http://localhost:8001/api"
 def login(u, p):
     r = requests.post(f"{B}/auth/login", json={"username": u, "password": p})
     r.raise_for_status()
-    return r.data if False else r.json()["token"]
+    return r.json()["token"]
 
 def H(t): return {"Authorization": f"Bearer {t}"}
 
@@ -21,83 +21,65 @@ acct = login("accounts", "Acct@123")
 disp = login("dispatch", "Disp@123")
 inst = login("installation", "Install@123")
 
-# skip if already seeded
-existing = check(requests.get(f"{B}/leads", headers=H(lead)), "list leads")
-if len(existing) >= 6:
-    print("Already seeded:", len(existing), "leads"); sys.exit(0)
+def mk_lead(name, phone, price, fin=False):
+    return check(requests.post(f"{B}/leads", headers=H(lead), json={"name": name, "phone": phone, "financing_required": fin, "project_price": price}), "create lead")
 
-def mk_lead(name, phone, fin=False):
-    return check(requests.post(f"{B}/leads", headers=H(lead), json={"name": name, "phone": phone, "financing_required": fin}), "create lead")
+def complete_stage_tasks(ecp_id, stage, tok):
+    det = check(requests.get(f"{B}/ecps/{ecp_id}", headers=H(tok)), "get ecp")
+    for t in det["tasks"]:
+        if t["stage"] == stage and t["applicable"] and not t["completed"]:
+            check(requests.post(f"{B}/ecps/{ecp_id}/tasks/{t['id']}/complete", headers=H(tok)), f"{stage} task")
 
-# 1) A fully-progressed ECP
-l1 = mk_lead("Ramesh Solar Villa", "9800000001", fin=True)
+# 1) Project advanced to Net Metering via full Dispatch->Manager->Installation flow
+l1 = mk_lead("Ramesh Solar Villa", "9800000001", 1000000, fin=True)
 check(requests.post(f"{B}/leads/{l1['id']}/action", headers=H(lead), json={"action": "YES"}), "qualify l1")
-b1 = check(requests.get(f"{B}/leads/{l1['id']}", headers=H(lead)), "bundle l1")
-ecp1 = b1["ecp"]["id"]
-# complete REG1 tasks (base + financing)
-det = check(requests.get(f"{B}/ecps/{ecp1}", headers=H(reg)), "ecp1")
-for t in det["tasks"]:
-    if t["applicable"] and t["stage"] == "REGISTRATION_1":
-        check(requests.post(f"{B}/ecps/{ecp1}/tasks/{t['id']}/complete", headers=H(reg)), "reg1 task")
-# ACCOUNTS 1: advance verification
-det = check(requests.get(f"{B}/ecps/{ecp1}", headers=H(acct)), "ecp1 acc")
-for t in det["tasks"]:
-    if t["stage"] == "ACCOUNTS_1" and t["applicable"]:
-        check(requests.post(f"{B}/ecps/{ecp1}/tasks/{t['id']}/complete", headers=H(acct)), "acc1 task")
-# Now DISPATCH: add first payment confirmed
-check(requests.post(f"{B}/payments", headers=H(acct), json={"ecp_id": ecp1, "type": "FIRST", "amount": 150000, "date": "2026-06-01", "status": "CONFIRMED"}), "first pay")
+ecp1 = check(requests.get(f"{B}/leads/{l1['id']}", headers=H(lead)), "b1")["ecp"]["id"]
+complete_stage_tasks(ecp1, "REGISTRATION_1", reg)
+complete_stage_tasks(ecp1, "ACCOUNTS_1", acct)
+check(requests.post(f"{B}/payments", headers=H(acct), json={"ecp_id": ecp1, "type": "FIRST", "amount": 300000, "date": "2026-08-01", "status": "CONFIRMED"}), "first pay")
+check(requests.post(f"{B}/payments", headers=H(acct), json={"ecp_id": ecp1, "type": "ADDITIONAL", "amount": 200000, "date": "2026-08-15", "status": "CONFIRMED"}), "sub pay")
 check(requests.post(f"{B}/ecps/{ecp1}/start-dispatch", headers=H(disp)), "start dispatch")
-det = check(requests.get(f"{B}/ecps/{ecp1}", headers=H(disp)), "ecp1 disp")
-for t in det["tasks"]:
-    if t["stage"] == "DISPATCH" and t["applicable"]:
-        check(requests.post(f"{B}/ecps/{ecp1}/tasks/{t['id']}/complete", headers=H(disp)), "disp task")
-# INSTALLATION
+complete_stage_tasks(ecp1, "DISPATCH", disp)
+# now INSTALLATION awaiting assignment -> manager assigns
+installers = check(requests.get(f"{B}/users/team/INSTALLATION", headers=H(manager)), "installers")
+det = check(requests.get(f"{B}/ecps/{ecp1}", headers=H(manager)), "ecp1 await")
+assert det["ecp"]["install_status"] == "AWAITING_ASSIGNMENT", det["ecp"]["install_status"]
+inst_id = [u for u in installers if u["username"] == "installation"][0]["id"]
+check(requests.post(f"{B}/ecps/{ecp1}/assign-installation", headers=H(manager), json={"assigned_user": inst_id}), "assign install")
 check(requests.post(f"{B}/ecps/{ecp1}/installation", headers=H(inst), json={"action": "start"}), "inst start")
 check(requests.post(f"{B}/ecps/{ecp1}/installation", headers=H(inst), json={"action": "complete"}), "inst complete")
-# NET METERING
-det = check(requests.get(f"{B}/ecps/{ecp1}", headers=H(inst)), "ecp1 nm")
-for t in det["tasks"]:
-    if t["stage"] == "NET_METERING" and t["applicable"]:
-        check(requests.post(f"{B}/ecps/{ecp1}/tasks/{t['id']}/complete", headers=H(inst)), "nm task")
-print("ECP1 progressed to:", check(requests.get(f"{B}/ecps/{ecp1}", headers=H(reg)), "ecp1 final")["ecp"]["current_stage"])
+print("ECP1 stage:", check(requests.get(f"{B}/ecps/{ecp1}", headers=H(reg)), "ecp1 final")["ecp"]["current_stage"])
 
-# 2) A payment-blocked dispatch ECP
-l2 = mk_lead("Sunita Rooftop", "9800000002")
+# 2) Payment-blocked dispatch project
+l2 = mk_lead("Sunita Rooftop", "9800000002", 800000)
 check(requests.post(f"{B}/leads/{l2['id']}/action", headers=H(lead), json={"action": "YES"}), "qualify l2")
-b2 = check(requests.get(f"{B}/leads/{l2['id']}", headers=H(lead)), "bundle l2")
-ecp2 = b2["ecp"]["id"]
-det = check(requests.get(f"{B}/ecps/{ecp2}", headers=H(reg)), "ecp2")
-for t in det["tasks"]:
-    if t["stage"] == "REGISTRATION_1" and t["applicable"]:
-        check(requests.post(f"{B}/ecps/{ecp2}/tasks/{t['id']}/complete", headers=H(reg)), "reg1")
-det = check(requests.get(f"{B}/ecps/{ecp2}", headers=H(acct)), "ecp2 acc")
-for t in det["tasks"]:
-    if t["stage"] == "ACCOUNTS_1" and t["applicable"]:
-        check(requests.post(f"{B}/ecps/{ecp2}/tasks/{t['id']}/complete", headers=H(acct)), "acc1")
-# leave payment pending -> payment blocked
-check(requests.post(f"{B}/payments", headers=H(acct), json={"ecp_id": ecp2, "type": "FIRST", "amount": 120000, "date": "2026-06-02", "status": "PENDING"}), "first pay pending")
+ecp2 = check(requests.get(f"{B}/leads/{l2['id']}", headers=H(lead)), "b2")["ecp"]["id"]
+complete_stage_tasks(ecp2, "REGISTRATION_1", reg)
+complete_stage_tasks(ecp2, "ACCOUNTS_1", acct)
+check(requests.post(f"{B}/payments", headers=H(acct), json={"ecp_id": ecp2, "type": "FIRST", "amount": 240000, "date": "2026-08-20", "status": "PENDING"}), "first pending")
 
-# 3) Follow-up lead
-l3 = mk_lead("Deepak Enterprises", "9800000003")
-check(requests.post(f"{B}/leads/{l3['id']}/action", headers=H(lead), json={"action": "FOLLOW_UP", "followup_date": "2027-01-20", "remarks": "Call after site inspection quote"}), "followup")
+# 3) Awaiting installation assignment (manager queue) project
+l3b = mk_lead("Skyline Offices", "9800000033", 1500000)
+check(requests.post(f"{B}/leads/{l3b['id']}/action", headers=H(lead), json={"action": "YES"}), "qualify l3b")
+ecp3 = check(requests.get(f"{B}/leads/{l3b['id']}", headers=H(lead)), "b3")["ecp"]["id"]
+complete_stage_tasks(ecp3, "REGISTRATION_1", reg)
+complete_stage_tasks(ecp3, "ACCOUNTS_1", acct)
+check(requests.post(f"{B}/payments", headers=H(acct), json={"ecp_id": ecp3, "type": "FIRST", "amount": 450000, "date": "2026-08-22", "status": "CONFIRMED"}), "first conf")
+check(requests.post(f"{B}/ecps/{ecp3}/start-dispatch", headers=H(disp)), "start dispatch3")
+complete_stage_tasks(ecp3, "DISPATCH", disp)  # now awaiting install assignment
 
-# 4) Site visit lead -> assign -> complete
-l4 = mk_lead("Green Homes Co", "9800000004")
-check(requests.post(f"{B}/leads/{l4['id']}/action", headers=H(lead), json={"action": "SITE_VISIT", "remarks": "Assess north-facing roof"}), "sitevisit")
+# 4) Follow-up, site visit, escalation, lost leads
+l4 = mk_lead("Deepak Enterprises", "9800000003", 600000)
+check(requests.post(f"{B}/leads/{l4['id']}/action", headers=H(lead), json={"action": "FOLLOW_UP", "followup_date": "2027-01-20", "remarks": "Call after quote"}), "followup")
+l5 = mk_lead("Green Homes Co", "9800000004", 900000)
+check(requests.post(f"{B}/leads/{l5['id']}/action", headers=H(lead), json={"action": "SITE_VISIT", "remarks": "Assess roof"}), "sitevisit")
 svs = check(requests.get(f"{B}/site-visits", headers=H(manager)), "list sv")
-inst_users = [u for u in check(requests.get(f"{B}/users", headers=H(owner)), "users") if u["role"] == "INSTALLATION"]
-sv = [s for s in svs if s["lead_id"] == l4["id"]][0]
-check(requests.post(f"{B}/site-visits/{sv['id']}/assign", headers=H(manager), json={"assigned_user": inst_users[0]["id"], "visit_date": "2027-01-10"}), "assign sv")
+sv = [s for s in svs if s["lead_id"] == l5["id"]][0]
+check(requests.post(f"{B}/site-visits/{sv['id']}/assign", headers=H(manager), json={"assigned_user": inst_id, "visit_date": "2027-01-10"}), "assign sv")
+l6 = mk_lead("Metro Mall Project", "9800000005", 2500000)
+check(requests.post(f"{B}/leads/{l6['id']}/action", headers=H(lead), json={"action": "ESCALATION", "reason": "Pricing approval", "remarks": "Wants discount"}), "escalate")
+l7 = mk_lead("Old Town Society", "9800000006", 700000)
+check(requests.post(f"{B}/leads/{l7['id']}/action", headers=H(lead), json={"action": "NO", "lost_reason": "COMPETITOR"}), "lost")
 
-# 5) Escalation lead
-l5 = mk_lead("Metro Mall Project", "9800000005")
-check(requests.post(f"{B}/leads/{l5['id']}/action", headers=H(lead), json={"action": "ESCALATION", "reason": "Pricing approval", "remarks": "Customer wants 12% discount"}), "escalate")
-
-# 6) Lost lead
-l6 = mk_lead("Old Town Society", "9800000006")
-check(requests.post(f"{B}/leads/{l6['id']}/action", headers=H(lead), json={"action": "NO", "lost_reason": "COMPETITOR"}), "lost")
-
-# SLA config so delayed logic active
 check(requests.put(f"{B}/sla", headers=H(owner), json={"config": {"REGISTRATION_1": 5, "ACCOUNTS_1": 3, "DISPATCH": 4, "INSTALLATION": 7, "NET_METERING": 10, "REGISTRATION_2": 5, "ACCOUNTS_2": 5}}), "sla")
-
 print("SEED DONE")

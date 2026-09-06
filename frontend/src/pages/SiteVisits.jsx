@@ -25,7 +25,7 @@ export default function SiteVisits() {
   useEffect(() => {
     load();
     if (user.role === "MANAGER" || user.role === "OWNER") {
-      api.get("/users").then((r) => setInstallers(r.data.filter((u) => u.role === "INSTALLATION" && u.active))).catch(() => {});
+      api.get("/users/team/INSTALLATION").then((r) => setInstallers(r.data)).catch(() => {});
     }
   }, []);
 

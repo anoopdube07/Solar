@@ -118,6 +118,15 @@ async def list_users(user: dict = Depends(get_current_user)):
     return users
 
 
+@api.get("/users/team/{role}")
+async def list_team_users(role: str, user: dict = Depends(get_current_user)):
+    require(user, "OWNER", "MANAGER")
+    if role not in wf.ROLES:
+        raise HTTPException(status_code=400, detail="Invalid role")
+    users = await db.users.find({"role": role, "active": True}, NO_ID).to_list(1000)
+    return [{"id": u["id"], "name": u["name"], "username": u["username"], "role": u["role"]} for u in users]
+
+
 @api.post("/users")
 async def create_user(body: UserCreate, user: dict = Depends(get_current_user)):
     require(user, "OWNER")
@@ -204,7 +213,12 @@ class LeadCreate(BaseModel):
     address: Optional[str] = ""
     source: Optional[str] = ""
     financing_required: bool = False
+    project_price: Optional[float] = 0
     remarks: Optional[str] = ""
+
+
+class ProjectPriceBody(BaseModel):
+    project_price: float
 
 
 class LeadAction(BaseModel):
@@ -248,6 +262,7 @@ async def create_lead(body: LeadCreate, user: dict = Depends(get_current_user)):
         "action_required": True,
         "return_reason": None,
         "financing_required": bool(body.financing_required),
+        "project_price": float(body.project_price or 0),
         "lost_reason": None,
         "lost_remarks": None,
         "ecp_id": None,
@@ -281,6 +296,19 @@ async def get_lead(lead_id: str, user: dict = Depends(get_current_user)):
     return await _lead_bundle(lead_id)
 
 
+@api.post("/leads/{lead_id}/project-price")
+async def set_project_price(lead_id: str, body: ProjectPriceBody, user: dict = Depends(get_current_user)):
+    require(user, "LEAD", "OWNER")
+    lead = await db.leads.find_one({"id": lead_id}, NO_ID)
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    price = float(body.project_price or 0)
+    await db.leads.update_one({"id": lead_id}, {"$set": {"project_price": price, "updated_at": now_iso()}})
+    if lead.get("ecp_id"):
+        await db.ecps.update_one({"id": lead["ecp_id"]}, {"$set": {"project_price": price, "updated_at": now_iso()}})
+    return await _lead_bundle(lead_id)
+
+
 async def create_ecp_from_lead(lead: dict, user: dict):
     financing = bool(lead.get("financing_required"))
     ecp_id = new_id()
@@ -289,6 +317,7 @@ async def create_ecp_from_lead(lead: dict, user: dict):
         "lead_id": lead["id"],
         "lead_name": lead["name"],
         "customer_phone": lead.get("phone", ""),
+        "project_price": float(lead.get("project_price") or 0),
         "current_stage": "REGISTRATION_1",
         "current_team": wf.STAGE_TEAM["REGISTRATION_1"],
         "responsible_user": None,
@@ -584,27 +613,51 @@ async def enrich_ecp(ecp: dict, sla_map: dict = None):
     return ecp
 
 
-def ecp_filter_for_role(role: str):
+ALLOWED_STAGES = {
+    "REGISTRATION": ["REGISTRATION_1", "REGISTRATION_2"],
+    "DISPATCH": ["DISPATCH"],
+    "INSTALLATION": ["INSTALLATION", "NET_METERING"],
+}
+
+
+def ecp_filter_for_role(user: dict):
+    role = user["role"]
     if role in ("OWNER", "MANAGER", "LEAD", "ACCOUNTS"):
         return {}
     if role == "REGISTRATION":
-        return {"current_stage": {"$in": ["REGISTRATION_1", "REGISTRATION_2"]}}
+        return {"current_stage": {"$in": ALLOWED_STAGES["REGISTRATION"]}}
     if role == "DISPATCH":
         return {"current_stage": "DISPATCH"}
     if role == "INSTALLATION":
-        return {"current_stage": {"$in": ["INSTALLATION", "NET_METERING"]}}
+        return {"current_stage": {"$in": ALLOWED_STAGES["INSTALLATION"]}, "responsible_user": user["id"]}
     return {"id": "__none__"}
 
 
+def _matches_view(e: dict, view: str) -> bool:
+    if view in ("PAYMENT_BLOCKED", "READY_FOR_DISPATCH", "DISPATCH_IN_PROCESS",
+                "READY_TO_INSTALL", "IN_PROCESS", "AWAITING_ASSIGNMENT"):
+        return e.get("derived_status") == view and e["status"] == "ACTIVE"
+    if view == "PAST_DISPATCH":
+        return (e["current_stage"] in ("INSTALLATION", "NET_METERING", "REGISTRATION_2", "ACCOUNTS_2")
+                or e["status"] in ("COMPLETED", "CLOSED"))
+    if view == "DELAYED":
+        return bool(e.get("delayed"))
+    return True
+
+
 @api.get("/ecps")
-async def list_ecps(stage: Optional[str] = None, user: dict = Depends(get_current_user)):
-    q = ecp_filter_for_role(user["role"])
+async def list_ecps(stage: Optional[str] = None, view: Optional[str] = None, user: dict = Depends(get_current_user)):
+    q = ecp_filter_for_role(user)
     if stage:
-        q = {"current_stage": stage} if user["role"] in ("OWNER", "MANAGER", "LEAD", "ACCOUNTS") else q
+        allowed = ALLOWED_STAGES.get(user["role"])
+        if allowed is None or stage in allowed:
+            q = {**q, "current_stage": stage}
     ecps = await db.ecps.find(q, NO_ID).sort("created_at", -1).to_list(3000)
     sla_map = await get_sla_map()
     for e in ecps:
         await enrich_ecp(e, sla_map)
+    if view:
+        ecps = [e for e in ecps if _matches_view(e, view)]
     return ecps
 
 
@@ -637,7 +690,13 @@ async def _advance_stage(ecp: dict, user: dict, note: str = ""):
         if target == "DISPATCH":
             upd["dispatch_started"] = False
         if target == "INSTALLATION":
-            upd["install_status"] = "READY_TO_INSTALL"
+            # Dispatch completed -> route to Manager for installation-employee assignment
+            upd["install_status"] = "AWAITING_ASSIGNMENT"
+            upd["current_team"] = "MANAGER"
+        if target == "NET_METERING":
+            # keep the assigned installation employee through net metering
+            upd["responsible_user"] = ecp.get("responsible_user")
+            upd["responsible_user_name"] = ecp.get("responsible_user_name")
         # create tasks for the new stage
         task_names = wf.STAGE_TASKS.get(target, [])
         docs = [_make_task(ecp["id"], target, t, True) for t in task_names]
@@ -681,6 +740,8 @@ async def complete_task(ecp_id: str, task_id: str, user: dict = Depends(get_curr
     stage_team = wf.STAGE_TEAM.get(task["stage"])
     if user["role"] not in ("OWNER", stage_team):
         raise HTTPException(status_code=403, detail="Only the responsible team can complete this task")
+    if user["role"] == "INSTALLATION" and task["stage"] in ("INSTALLATION", "NET_METERING") and ecp.get("responsible_user") != user["id"]:
+        raise HTTPException(status_code=403, detail="This project is not assigned to you")
     if task["stage"] != ecp["current_stage"]:
         raise HTTPException(status_code=400, detail="Task does not belong to the current stage")
     if not task["applicable"]:
@@ -718,6 +779,31 @@ class InstallBody(BaseModel):
     action: str  # start | complete
 
 
+class AssignInstallation(BaseModel):
+    assigned_user: str
+
+
+@api.post("/ecps/{ecp_id}/assign-installation")
+async def assign_installation(ecp_id: str, body: AssignInstallation, user: dict = Depends(get_current_user)):
+    require(user, "MANAGER", "OWNER")
+    ecp = await db.ecps.find_one({"id": ecp_id}, NO_ID)
+    if not ecp:
+        raise HTTPException(status_code=404, detail="ECP not found")
+    if ecp["current_stage"] != "INSTALLATION" or ecp.get("install_status") != "AWAITING_ASSIGNMENT":
+        raise HTTPException(status_code=400, detail="ECP is not awaiting installation assignment")
+    emp = await db.users.find_one({"id": body.assigned_user}, NO_ID)
+    if not emp or emp["role"] != "INSTALLATION" or not emp.get("active", True):
+        raise HTTPException(status_code=400, detail="Assignee must be an active Installation team member")
+    await db.ecps.update_one({"id": ecp_id}, {"$set": {
+        "responsible_user": emp["id"], "responsible_user_name": emp["name"],
+        "current_team": "INSTALLATION", "install_status": "READY_TO_INSTALL", "updated_at": now_iso()}})
+    await db.ecp_stage_history.insert_one({
+        "id": new_id(), "ecp_id": ecp_id, "from_stage": "INSTALLATION", "to_stage": "INSTALLATION",
+        "changed_by": user["id"], "changed_by_name": user["name"], "changed_at": now_iso(),
+        "note": f"Installation assigned to {emp['name']}"})
+    return await get_ecp(ecp_id, user)
+
+
 @api.post("/ecps/{ecp_id}/installation")
 async def installation_action(ecp_id: str, body: InstallBody, user: dict = Depends(get_current_user)):
     require(user, "INSTALLATION", "OWNER")
@@ -726,6 +812,8 @@ async def installation_action(ecp_id: str, body: InstallBody, user: dict = Depen
         raise HTTPException(status_code=404, detail="ECP not found")
     if ecp["current_stage"] != "INSTALLATION":
         raise HTTPException(status_code=400, detail="ECP is not in Installation stage")
+    if user["role"] == "INSTALLATION" and ecp.get("responsible_user") != user["id"]:
+        raise HTTPException(status_code=403, detail="This installation is not assigned to you")
     if body.action == "start":
         if ecp.get("install_status") != "READY_TO_INSTALL":
             raise HTTPException(status_code=400, detail="Installation is not ready to start")
@@ -858,6 +946,22 @@ async def update_payment(payment_id: str, body: PaymentUpdate, user: dict = Depe
     return await db.payments.find_one({"id": payment_id}, NO_ID)
 
 
+def _ecp_receivable(ecp: dict, ecp_payments: list):
+    price = float(ecp.get("project_price") or 0)
+    first_conf = sum(p["amount"] for p in ecp_payments if p["type"] == "FIRST" and p["status"] == "CONFIRMED")
+    sub_conf = sum(p["amount"] for p in ecp_payments if p["type"] == "ADDITIONAL" and p["status"] == "CONFIRMED")
+    final_conf = sum(p["amount"] for p in ecp_payments if p["type"] == "FINAL" and p["status"] == "CONFIRMED")
+    total_conf = first_conf + sub_conf + final_conf
+    receivable = max(price - total_conf, 0)
+    first_confirmed = any(p["type"] == "FIRST" and p["status"] == "CONFIRMED" for p in ecp_payments)
+    return {
+        "project_price": price, "first_confirmed_amount": first_conf,
+        "subsequent_confirmed_amount": sub_conf, "final_confirmed_amount": final_conf,
+        "total_received": total_conf, "total_receivable": receivable,
+        "first_payment_confirmed": first_confirmed,
+    }
+
+
 @api.get("/payments/monitor")
 async def payment_monitor(user: dict = Depends(get_current_user)):
     require(user, "ACCOUNTS", "OWNER", "MANAGER")
@@ -869,10 +973,12 @@ async def payment_monitor(user: dict = Depends(get_current_user)):
     rows = []
     for e in ecps:
         ps = by_ecp.get(e["id"], [])
+        calc = _ecp_receivable(e, ps)
         rows.append({
-            "ecp_id": e["id"], "lead_name": e["lead_name"], "stage": e["current_stage"],
+            "ecp_id": e["id"], "lead_name": e["lead_name"], "customer_phone": e.get("customer_phone", ""),
+            "stage": e["current_stage"],
             "stage_label": wf.STAGE_LABELS.get(e["current_stage"], e["current_stage"]),
-            "status": e["status"], "payments": ps})
+            "status": e["status"], "payments": ps, **calc})
     return rows
 
 
@@ -943,6 +1049,7 @@ async def dashboard(user: dict = Depends(get_current_user)):
         data["site_visits_to_assign"] = len([s for s in site_visits if s["status"] == "REQUESTED"])
         data["site_visits_today"] = len([s for s in site_visits if s["status"] == "ASSIGNED" and (s.get("visit_date") or "")[:10] == today])
         data["site_visits_upcoming"] = len([s for s in site_visits if s["status"] == "ASSIGNED" and (s.get("visit_date") or "")[:10] > today])
+        data["awaiting_install_assignment"] = len([e for e in active_ecps if e["current_stage"] == "INSTALLATION" and e.get("install_status") == "AWAITING_ASSIGNMENT"])
         data["delayed"] = len(delayed)
         data["active_leads"] = len([l for l in leads if l["status"] in ("PENDING", "FOLLOW_UP", "SITE_VISIT", "ESCALATED")])
         data["active_ecps"] = len(active_ecps)
@@ -956,13 +1063,25 @@ async def dashboard(user: dict = Depends(get_current_user)):
         data["lost"] = lead_count("LOST")
 
     elif role == "ACCOUNTS":
-        data["accounts_1"] = ecp_stage_count("ACCOUNTS_1")
-        data["accounts_2"] = ecp_stage_count("ACCOUNTS_2")
-        data["first_pending"] = pay_count("FIRST", "PENDING")
-        data["first_confirmed"] = pay_count("FIRST", "CONFIRMED")
-        data["final_pending"] = pay_count("FINAL", "PENDING")
-        data["final_confirmed"] = pay_count("FINAL", "CONFIRMED")
-        data["additional"] = len([p for p in payments if p["type"] == "ADDITIONAL"])
+        by_ecp = {}
+        for p in payments:
+            by_ecp.setdefault(p["ecp_id"], []).append(p)
+        first_pending_count = 0
+        subsequent_followup_count = 0
+        subsequent_amount_pending = 0.0
+        total_receivable = 0.0
+        for e in active_ecps:
+            calc = _ecp_receivable(e, by_ecp.get(e["id"], []))
+            total_receivable += calc["total_receivable"]
+            if not calc["first_payment_confirmed"]:
+                first_pending_count += 1
+            elif calc["total_receivable"] > 0:
+                subsequent_followup_count += 1
+                subsequent_amount_pending += calc["total_receivable"]
+        data["first_payment_pending_count"] = first_pending_count
+        data["subsequent_followup_count"] = subsequent_followup_count
+        data["subsequent_amount_pending"] = subsequent_amount_pending
+        data["total_receivable"] = total_receivable
 
     elif role == "DISPATCH":
         data["payment_blocked"] = derived_count("PAYMENT_BLOCKED")
@@ -977,9 +1096,10 @@ async def dashboard(user: dict = Depends(get_current_user)):
         data["sv_today"] = len([s for s in mine if s["status"] == "ASSIGNED" and (s.get("visit_date") or "")[:10] == today])
         data["sv_assigned"] = len([s for s in mine if s["status"] == "ASSIGNED"])
         data["sv_completed"] = len([s for s in mine if s["status"] == "DONE"])
-        data["ready_to_install"] = derived_count("READY_TO_INSTALL")
-        data["installation_in_process"] = derived_count("IN_PROCESS")
-        data["net_metering"] = ecp_stage_count("NET_METERING")
+        my_ecps = [e for e in active_ecps if e.get("responsible_user") == user["id"]]
+        data["ready_to_install"] = len([e for e in my_ecps if e["current_stage"] == "INSTALLATION" and e.get("install_status") == "READY_TO_INSTALL"])
+        data["installation_in_process"] = len([e for e in my_ecps if e["current_stage"] == "INSTALLATION" and e.get("install_status") == "IN_PROCESS"])
+        data["net_metering"] = len([e for e in my_ecps if e["current_stage"] == "NET_METERING"])
 
     elif role == "REGISTRATION":
         data["registration_1"] = ecp_stage_count("REGISTRATION_1")

@@ -12,7 +12,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { CheckCircle2, Circle, Truck, Wrench, Ban, Coins } from "lucide-react";
+import { CheckCircle2, Circle, Truck, Wrench, Ban, Coins, UserPlus } from "lucide-react";
 import { toast } from "sonner";
 
 const CLOSURE_REASONS = ["CUSTOMER_CANCELLED", "DUPLICATE", "NOT_FEASIBLE", "OTHER"];
@@ -25,9 +25,17 @@ export default function ECPDetail() {
   const [data, setData] = useState(null);
   const [closeDlg, setCloseDlg] = useState(false);
   const [cf, setCf] = useState({});
+  const [assignDlg, setAssignDlg] = useState(false);
+  const [installers, setInstallers] = useState([]);
+  const [assignUser, setAssignUser] = useState("");
 
   const load = () => api.get(`/ecps/${id}`).then((r) => setData(r.data));
   useEffect(() => { load(); }, [id]);
+  useEffect(() => {
+    if (user.role === "MANAGER" || user.role === "OWNER") {
+      api.get("/users/team/INSTALLATION").then((r) => setInstallers(r.data)).catch(() => {});
+    }
+  }, [user.role]);
   if (!data) return <div className="p-8 text-slate-500">Loading…</div>;
 
   const { ecp, tasks, history, payments } = data;
@@ -56,10 +64,23 @@ export default function ECPDetail() {
     try { await api.post(`/ecps/${id}/close`, { reason: cf.reason, remarks: cf.remarks }); toast.success("ECP closed"); setCloseDlg(false); load(); }
     catch (e) { toast.error(apiError(e.response?.data?.detail)); }
   };
+  const assignInstall = async () => {
+    if (!assignUser) { toast.error("Select an installation employee"); return; }
+    try { await api.post(`/ecps/${id}/assign-installation`, { assigned_user: assignUser }); toast.success("Installation assigned"); setAssignDlg(false); setAssignUser(""); load(); }
+    catch (e) { toast.error(apiError(e.response?.data?.detail)); }
+  };
 
   const canFinancing = ["LEAD", "MANAGER", "OWNER"].includes(user.role);
   const canClose = ["OWNER", "MANAGER"].includes(user.role) && active;
+  const canAssignInstall = ["MANAGER", "OWNER"].includes(user.role);
   const stageIdx = STAGE_ORDER.indexOf(stage);
+  const fmt = (n) => "₹" + Number(n || 0).toLocaleString("en-IN");
+  const firstConf = payments.filter((p) => p.type === "FIRST" && p.status === "CONFIRMED").reduce((a, p) => a + p.amount, 0);
+  const subConf = payments.filter((p) => p.type === "ADDITIONAL" && p.status === "CONFIRMED").reduce((a, p) => a + p.amount, 0);
+  const finalConf = payments.filter((p) => p.type === "FINAL" && p.status === "CONFIRMED").reduce((a, p) => a + p.amount, 0);
+  const totalReceived = firstConf + subConf + finalConf;
+  const receivable = Math.max((ecp.project_price || 0) - totalReceived, 0);
+  const typeLabel = (t) => (t === "ADDITIONAL" ? "Subsequent" : t === "FIRST" ? "First" : "Final");
 
   return (
     <div>
@@ -68,10 +89,11 @@ export default function ECPDetail() {
       <div className="p-6 lg:p-8 space-y-6">
         {/* highlight */}
         <Card className="p-5">
-          <div className="grid grid-cols-2 sm:grid-cols-5 gap-4">
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
             <Info label="Current Stage"><StatusBadge value={stage} /></Info>
             <Info label="Display Status"><span className="font-semibold">{ecp.display_status}</span>{ecp.derived_status && <div className="mt-1"><StatusBadge value={ecp.derived_status} label={DERIVED_LABELS[ecp.derived_status]} /></div>}</Info>
-            <Info label="Current Team">{ecp.current_team || "—"}</Info>
+            <Info label="Current Team / Person">{ecp.current_team || "—"}{ecp.responsible_user_name ? ` · ${ecp.responsible_user_name}` : ""}</Info>
+            <Info label="Project Price"><span data-testid="ecp-project-price">{ecp.project_price ? fmt(ecp.project_price) : "—"}</span></Info>
             <Info label="Days in Stage">{ecp.days_in_stage ?? "—"} {ecp.delayed && <DelayedBadge />}</Info>
             <Info label="Financing">{ecp.financing_required ? "Required" : "Not required"}</Info>
           </div>
@@ -128,6 +150,13 @@ export default function ECPDetail() {
                 {stage === "INSTALLATION" ? (
                   <div className="space-y-3">
                     <div className="text-sm">Installation status: <StatusBadge value={ecp.install_status} label={DERIVED_LABELS[ecp.install_status]} /></div>
+                    {ecp.responsible_user_name && <div className="text-sm text-slate-600">Assigned to: <b>{ecp.responsible_user_name}</b></div>}
+                    {ecp.install_status === "AWAITING_ASSIGNMENT" && canAssignInstall && (
+                      <Button data-testid="assign-install-button" onClick={() => setAssignDlg(true)} className="bg-sky-600 hover:bg-sky-700"><UserPlus size={16} className="mr-1.5" /> Assign Installation Employee</Button>
+                    )}
+                    {ecp.install_status === "AWAITING_ASSIGNMENT" && !canAssignInstall && (
+                      <p className="text-sm text-amber-600 font-medium">Awaiting Manager to assign an installation employee.</p>
+                    )}
                     {isStageTeam && ecp.install_status === "READY_TO_INSTALL" && <Button data-testid="install-start-button" onClick={() => installAction("start")} className="bg-sky-600 hover:bg-sky-700"><Wrench size={16} className="mr-1.5" /> Start Installation</Button>}
                     {isStageTeam && ecp.install_status === "IN_PROCESS" && <Button data-testid="install-complete-button" onClick={() => installAction("complete")} className="bg-emerald-600 hover:bg-emerald-700"><CheckCircle2 size={16} className="mr-1.5" /> Complete Installation</Button>}
                   </div>
@@ -143,7 +172,7 @@ export default function ECPDetail() {
                     ))}
                   </ul>
                 )}
-                {!isStageTeam && <p className="text-xs text-slate-400 mt-3">Read-only — this stage is owned by {ecp.current_team}.</p>}
+                {!isStageTeam && !(stage === "INSTALLATION" && canAssignInstall) && <p className="text-xs text-slate-400 mt-3">Read-only — this stage is owned by {ecp.current_team}.</p>}
               </Card>
             )}
 
@@ -163,17 +192,23 @@ export default function ECPDetail() {
 
             {/* payments summary */}
             <Card className="p-5">
-              <h3 className="font-head font-semibold mb-3 flex items-center gap-2"><Coins size={17} /> Payments</h3>
+              <h3 className="font-head font-semibold mb-3 flex items-center gap-2"><Coins size={17} /> Payment Position</h3>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+                <Info label="Project Price">{fmt(ecp.project_price)}</Info>
+                <Info label="Total Received">{fmt(totalReceived)}</Info>
+                <Info label="Total Receivable"><span className="text-rose-700 font-semibold">{fmt(receivable)}</span></Info>
+                <Info label="Subsequent Received">{fmt(subConf)}</Info>
+              </div>
               <ul className="space-y-2">
                 {payments.length === 0 && <li className="text-sm text-slate-400">No payments recorded.</li>}
                 {payments.map((p) => (
                   <li key={p.id} className="flex items-center justify-between text-sm border-b pb-1">
-                    <span><b>{p.type}</b> · ₹{p.amount} · {p.date?.slice(0, 10)}</span>
+                    <span><b>{typeLabel(p.type)}</b> · {fmt(p.amount)} · {p.date?.slice(0, 10)}</span>
                     <StatusBadge value={p.status} kind={p.status === "CONFIRMED" ? "CONFIRMED" : "PENDING"} label={p.status} />
                   </li>
                 ))}
               </ul>
-              {user.role === "ACCOUNTS" && <Button variant="outline" className="mt-3" onClick={() => nav("/payments")}>Manage Payments</Button>}
+              {user.role === "ACCOUNTS" && <Button variant="outline" className="mt-3" onClick={() => nav("/payments")}>Go to Payments</Button>}
             </Card>
 
             {canClose && (
@@ -209,6 +244,19 @@ export default function ECPDetail() {
             <div><Label>Remarks {cf.reason === "OTHER" && "*"}</Label><Textarea data-testid="closure-remarks-input" value={cf.remarks || ""} onChange={(e) => setCf({ ...cf, remarks: e.target.value })} /></div>
           </div>
           <DialogFooter><Button data-testid="closure-submit" variant="destructive" onClick={closeEcp}>Confirm Close</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={assignDlg} onOpenChange={setAssignDlg}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Assign Installation Employee</DialogTitle></DialogHeader>
+          <div><Label>Installation Employee *</Label>
+            <Select value={assignUser} onValueChange={setAssignUser}>
+              <SelectTrigger data-testid="assign-install-select"><SelectValue placeholder="Select employee" /></SelectTrigger>
+              <SelectContent>{installers.map((u) => <SelectItem key={u.id} value={u.id}>{u.name}</SelectItem>)}</SelectContent>
+            </Select>
+          </div>
+          <DialogFooter><Button data-testid="assign-install-submit" onClick={assignInstall} className="bg-sky-600 hover:bg-sky-700">Assign</Button></DialogFooter>
         </DialogContent>
       </Dialog>
     </div>

@@ -24,7 +24,7 @@ export default function Leads() {
   const [leads, setLeads] = useState([]);
   const [q, setQ] = useState("");
   const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({ name: "", phone: "", email: "", address: "", source: "", financing_required: false, remarks: "" });
+  const [form, setForm] = useState({ name: "", phone: "", email: "", address: "", source: "", financing_required: false, project_price: "", remarks: "" });
 
   const load = () => api.get("/leads").then((r) => setLeads(r.data));
   useEffect(() => { load(); }, []);
@@ -38,10 +38,10 @@ export default function Leads() {
   const create = async () => {
     if (!form.name || !form.phone) { toast.error("Name and phone are required"); return; }
     try {
-      await api.post("/leads", form);
+      await api.post("/leads", { ...form, project_price: parseFloat(form.project_price) || 0 });
       toast.success("Lead created");
       setOpen(false);
-      setForm({ name: "", phone: "", email: "", address: "", source: "", financing_required: false, remarks: "" });
+      setForm({ name: "", phone: "", email: "", address: "", source: "", financing_required: false, project_price: "", remarks: "" });
       load();
     } catch (e) { toast.error(apiError(e.response?.data?.detail)); }
   };
@@ -64,6 +64,7 @@ export default function Leads() {
                   <div><Label>Source</Label><Input value={form.source} onChange={(e) => setForm({ ...form, source: e.target.value })} /></div>
                 </div>
                 <div><Label>Address</Label><Input value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} /></div>
+                <div><Label>Project Price / Customer Agreed Price (₹)</Label><Input data-testid="lead-project-price-input" type="number" value={form.project_price} onChange={(e) => setForm({ ...form, project_price: e.target.value })} /></div>
                 <div className="flex items-center gap-2">
                   <Checkbox id="fin" checked={form.financing_required} onCheckedChange={(v) => setForm({ ...form, financing_required: !!v })} data-testid="lead-financing-checkbox" />
                   <Label htmlFor="fin">Financing Required</Label>

@@ -24,6 +24,8 @@ export default function LeadDetail() {
   const [data, setData] = useState(null);
   const [dlg, setDlg] = useState(null); // YES|NO|FOLLOW_UP|SITE_VISIT|ESCALATION
   const [f, setF] = useState({});
+  const [priceDlg, setPriceDlg] = useState(false);
+  const [priceVal, setPriceVal] = useState("");
 
   const load = () => api.get(`/leads/${id}`).then((r) => setData(r.data));
   useEffect(() => { load(); }, [id]);
@@ -32,6 +34,8 @@ export default function LeadDetail() {
   const { lead, followups, site_visits, escalations, ecp } = data;
   const canAct = user.role === "LEAD" && lead.action_required;
   const canReopen = user.role === "OWNER" && lead.status === "LOST";
+  const canEditPrice = (user.role === "LEAD" || user.role === "OWNER") && lead.status !== "LOST";
+  const fmt = (n) => "₹" + Number(n || 0).toLocaleString("en-IN");
 
   const doAction = async (payload) => {
     try {
@@ -44,6 +48,11 @@ export default function LeadDetail() {
 
   const reopen = async () => {
     try { await api.post(`/leads/${id}/reopen`); toast.success("Lead reopened"); load(); }
+    catch (e) { toast.error(apiError(e.response?.data?.detail)); }
+  };
+
+  const savePrice = async () => {
+    try { await api.post(`/leads/${id}/project-price`, { project_price: parseFloat(priceVal) || 0 }); toast.success("Project price saved"); setPriceDlg(false); load(); }
     catch (e) { toast.error(apiError(e.response?.data?.detail)); }
   };
 
@@ -76,6 +85,10 @@ export default function LeadDetail() {
               <Field label="Current Team">{lead.current_team || "—"}</Field>
               <Field label="Action Required">{lead.action_required ? <span className="text-amber-600 font-semibold">YES</span> : "No"}</Field>
               <Field label="Financing">{lead.financing_required ? "Required" : "Not required"}</Field>
+              <Field label="Project Price">
+                <span data-testid="lead-project-price">{lead.project_price ? fmt(lead.project_price) : "—"}</span>
+                {canEditPrice && <button data-testid="lead-edit-price-btn" className="ml-2 text-xs text-sky-600 underline" onClick={() => { setPriceVal(lead.project_price || ""); setPriceDlg(true); }}>edit</button>}
+              </Field>
             </div>
             {lead.return_reason && (
               <div className="mt-4 text-sm bg-sky-50 border border-sky-200 rounded-md px-3 py-2 text-sky-800" data-testid="lead-return-reason">
@@ -157,6 +170,14 @@ export default function LeadDetail() {
             </>)}
           </div>
           <DialogFooter><Button data-testid="lead-action-submit" onClick={submit} className="bg-sky-600 hover:bg-sky-700">Confirm</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={priceDlg} onOpenChange={setPriceDlg}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Project Price / Customer Agreed Price</DialogTitle></DialogHeader>
+          <div><Label>Amount (₹)</Label><Input data-testid="lead-price-input" type="number" value={priceVal} onChange={(e) => setPriceVal(e.target.value)} /></div>
+          <DialogFooter><Button data-testid="lead-price-save" onClick={savePrice} className="bg-sky-600 hover:bg-sky-700">Save</Button></DialogFooter>
         </DialogContent>
       </Dialog>
     </div>

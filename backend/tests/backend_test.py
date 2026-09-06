@@ -296,17 +296,33 @@ class TestECPFlow:
         # start dispatch OK
         r = requests.post(f"{API}/ecps/{ecp_id}/start-dispatch", headers=_hdr(tokens["dispatch"]))
         assert r.status_code == 200
-        # dispatch tasks completion -> INSTALLATION
+        # dispatch tasks completion -> INSTALLATION (AWAITING_ASSIGNMENT under Manager)
         _complete_all_applicable(ecp_id, "DISPATCH", tokens["dispatch"])
         e = requests.get(f"{API}/ecps/{ecp_id}", headers=_hdr(tokens["owner"])).json()["ecp"]
         assert e["current_stage"] == "INSTALLATION"
+        assert e["install_status"] == "AWAITING_ASSIGNMENT"
+        assert e["current_team"] == "MANAGER"
+        # Manager assigns installation employee
+        users = requests.get(f"{API}/users", headers=_hdr(tokens["owner"])).json()
+        install_user = next(u for u in users if u["role"] == "INSTALLATION" and u.get("active", True))
+        r = requests.post(f"{API}/ecps/{ecp_id}/assign-installation",
+            json={"assigned_user": install_user["id"]}, headers=_hdr(tokens["manager"]))
+        assert r.status_code == 200, r.text
+        e = r.json()["ecp"]
         assert e["install_status"] == "READY_TO_INSTALL"
-        # install start -> IN_PROCESS
+        assert e["current_team"] == "INSTALLATION"
+        assert e["responsible_user"] == install_user["id"]
+        # install start -> IN_PROCESS (only assignee can act)
+        # log in as the assignee installer
+        _tok = requests.post(f"{API}/auth/login",
+            json={"username": install_user["username"], "password": "Install@123"}).json().get("token")
+        # if default install user is the assignee, use existing token; otherwise use fresh
+        installer_tok = tokens["installation"] if install_user["username"] == "installation" else _tok
         r = requests.post(f"{API}/ecps/{ecp_id}/installation",
-            json={"action": "start"}, headers=_hdr(tokens["installation"]))
-        assert r.status_code == 200
+            json={"action": "start"}, headers=_hdr(installer_tok))
+        assert r.status_code == 200, r.text
         r = requests.post(f"{API}/ecps/{ecp_id}/installation",
-            json={"action": "complete"}, headers=_hdr(tokens["installation"]))
+            json={"action": "complete"}, headers=_hdr(installer_tok))
         assert r.status_code == 200
         e = requests.get(f"{API}/ecps/{ecp_id}", headers=_hdr(tokens["owner"])).json()["ecp"]
         assert e["current_stage"] == "NET_METERING"

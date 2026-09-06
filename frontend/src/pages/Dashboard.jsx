@@ -52,6 +52,7 @@ export default function Dashboard() {
       ["Site Visits To Assign", d.site_visits_to_assign, "amber", go("/site-visits")],
       ["Today's Site Visits", d.site_visits_today, "sky", go("/site-visits")],
       ["Upcoming Site Visits", d.site_visits_upcoming, "indigo", go("/site-visits")],
+      ["Awaiting Install Assignment", d.awaiting_install_assignment, "amber", go("/ecps?view=AWAITING_ASSIGNMENT")],
       ["Delayed Projects", d.delayed, "red", go("/ecps")],
       ["Active Leads", d.active_leads, "slate", go("/leads")],
       ["Active ECPs", d.active_ecps, "sky", go("/ecps")],
@@ -66,21 +67,19 @@ export default function Dashboard() {
       ["Lost", d.lost, "slate", go("/leads?status=LOST")],
     ]]);
   } else if (user.role === "ACCOUNTS") {
-    sections.push(["Accounts & Payments", [
-      ["Accounts 1", d.accounts_1, "sky", go("/ecps?stage=ACCOUNTS_1")],
-      ["Accounts 2", d.accounts_2, "sky", go("/ecps?stage=ACCOUNTS_2")],
-      ["First Pending", d.first_pending, "amber", go("/payments")],
-      ["First Confirmed", d.first_confirmed, "emerald", go("/payments")],
-      ["Final Pending", d.final_pending, "amber", go("/payments")],
-      ["Final Confirmed", d.final_confirmed, "emerald", go("/payments")],
-      ["Additional", d.additional, "slate", go("/payments")],
+    const fmt = (n) => "₹" + Number(n || 0).toLocaleString("en-IN");
+    sections.push(["Receivables", [
+      ["First Payment Pending", `${d.first_payment_pending_count} Projects`, "amber", go("/payments")],
+      ["Subsequent Payment Follow-up", `${d.subsequent_followup_count} Projects`, "sky", go("/payments")],
+      ["Subsequent Amount Pending", fmt(d.subsequent_amount_pending), "indigo", go("/payments")],
+      ["Total Receivable", fmt(d.total_receivable), "red", go("/payments")],
     ]]);
   } else if (user.role === "DISPATCH") {
     sections.push(["Dispatch Hub", [
-      ["Payment Blocked", d.payment_blocked, "red", go("/ecps")],
-      ["Ready for Dispatch", d.ready_for_dispatch, "teal", go("/ecps")],
-      ["Dispatch In Process", d.dispatch_in_process, "indigo", go("/ecps")],
-      ["Delivered / Past Dispatch", d.completed, "emerald", go("/ecps")],
+      ["Payment Blocked", d.payment_blocked, "red", go("/ecps?view=PAYMENT_BLOCKED")],
+      ["Ready for Dispatch", d.ready_for_dispatch, "teal", go("/ecps?view=READY_FOR_DISPATCH")],
+      ["Dispatch In Process", d.dispatch_in_process, "indigo", go("/ecps?view=DISPATCH_IN_PROCESS")],
+      ["Delivered / Past Dispatch", d.completed, "emerald", go("/ecps?view=PAST_DISPATCH")],
     ]]);
   } else if (user.role === "INSTALLATION") {
     sections.push(["Lead Site Visits", [
@@ -90,9 +89,9 @@ export default function Dashboard() {
       ["Completed", d.sv_completed, "emerald", go("/site-visits")],
     ]]);
     sections.push(["ECP Installation", [
-      ["Ready to Install", d.ready_to_install, "teal", go("/ecps")],
-      ["In Process", d.installation_in_process, "indigo", go("/ecps")],
-      ["Net Metering", d.net_metering, "slate", go("/ecps")],
+      ["Ready to Install", d.ready_to_install, "teal", go("/ecps?view=READY_TO_INSTALL")],
+      ["In Process", d.installation_in_process, "indigo", go("/ecps?view=IN_PROCESS")],
+      ["Net Metering", d.net_metering, "slate", go("/ecps?stage=NET_METERING")],
     ]]);
   } else if (user.role === "REGISTRATION") {
     sections.push(["Registration", [
