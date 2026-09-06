@@ -1,18 +1,36 @@
 import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import api from "@/lib/api";
+import api, { API } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { PageHeader, StatCard } from "@/components/ui-bits";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogTrigger } from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
+import { Download } from "lucide-react";
 
 export default function Dashboard() {
   const { user } = useAuth();
   const nav = useNavigate();
   const [d, setD] = useState(null);
+  const [exportDlg, setExportDlg] = useState(false);
+  const [inclMoney, setInclMoney] = useState(false);
 
   useEffect(() => { api.get("/dashboard").then((r) => setD(r.data)); }, []);
   if (!d) return <div className="p-8 text-slate-500">Loading…</div>;
 
   const go = (path) => () => nav(path);
+
+  const downloadCsv = async () => {
+    try {
+      const res = await api.get(`/export/projects?include_money=${inclMoney}`, { responseType: "blob" });
+      const url = window.URL.createObjectURL(new Blob([res.data]));
+      const a = document.createElement("a");
+      a.href = url; a.download = "projects.csv"; a.click();
+      window.URL.revokeObjectURL(url);
+      setExportDlg(false);
+    } catch (e) { /* owner-only enforced server-side */ }
+  };
 
   const sections = [];
   if (user.role === "OWNER") {
@@ -49,9 +67,9 @@ export default function Dashboard() {
     ]]);
   } else if (user.role === "MANAGER") {
     sections.push(["Operations", [
-      ["Site Visits To Assign", d.site_visits_to_assign, "amber", go("/site-visits")],
-      ["Today's Site Visits", d.site_visits_today, "sky", go("/site-visits")],
-      ["Upcoming Site Visits", d.site_visits_upcoming, "indigo", go("/site-visits")],
+      ["Site Visits To Assign", d.site_visits_to_assign, "amber", go("/site-visits?status=REQUESTED")],
+      ["Today's Site Visits", d.site_visits_today, "sky", go("/site-visits?status=ASSIGNED")],
+      ["Upcoming Site Visits", d.site_visits_upcoming, "indigo", go("/site-visits?status=ASSIGNED")],
       ["Awaiting Install Assignment", d.awaiting_install_assignment, "amber", go("/ecps?view=AWAITING_ASSIGNMENT")],
       ["Delayed Projects", d.delayed, "red", go("/ecps")],
       ["Active Leads", d.active_leads, "slate", go("/leads")],
@@ -59,8 +77,8 @@ export default function Dashboard() {
     ]]);
   } else if (user.role === "LEAD") {
     sections.push(["My Lead Queue", [
-      ["Action Required", d.action_required, "amber", go("/leads")],
-      ["Follow-ups Today", d.followups_today, "sky", go("/leads?status=FOLLOW_UP")],
+      ["Action Required", d.action_required, "amber", go("/leads?status=PENDING")],
+      ["Follow-ups Today", d.followups_today, "sky", go("/leads?followup=today")],
       ["Waiting for Site Visit", d.waiting_site_visit, "indigo", go("/leads?status=SITE_VISIT")],
       ["Escalated", d.escalated, "red", go("/leads?status=ESCALATED")],
       ["Qualified", d.qualified, "emerald", go("/leads?status=QUALIFIED")],
@@ -69,10 +87,10 @@ export default function Dashboard() {
   } else if (user.role === "ACCOUNTS") {
     const fmt = (n) => "₹" + Number(n || 0).toLocaleString("en-IN");
     sections.push(["Receivables", [
-      ["First Payment Pending", `${d.first_payment_pending_count} Projects`, "amber", go("/payments")],
-      ["Subsequent Payment Follow-up", `${d.subsequent_followup_count} Projects`, "sky", go("/payments")],
-      ["Subsequent Amount Pending", fmt(d.subsequent_amount_pending), "indigo", go("/payments")],
-      ["Total Receivable", fmt(d.total_receivable), "red", go("/payments")],
+      ["First Payment Pending", `${d.first_payment_pending_count} Projects`, "amber", go("/payments?view=first_pending")],
+      ["Subsequent Payment Follow-up", `${d.subsequent_followup_count} Projects`, "sky", go("/payments?view=subsequent")],
+      ["Subsequent Amount Pending", fmt(d.subsequent_amount_pending), "indigo", go("/payments?view=subsequent")],
+      ["Total Receivable", fmt(d.total_receivable), "red", go("/payments?view=receivable")],
     ]]);
   } else if (user.role === "DISPATCH") {
     sections.push(["Dispatch Hub", [
@@ -103,7 +121,20 @@ export default function Dashboard() {
 
   return (
     <div>
-      <PageHeader title={`${d.role_label} Dashboard`} subtitle="Click any counter to drill down into the records." />
+      <PageHeader title={`${d.role_label} Dashboard`} subtitle="Click any counter to drill down into the records."
+        right={user.role === "OWNER" && (
+          <Dialog open={exportDlg} onOpenChange={setExportDlg}>
+            <DialogTrigger asChild><Button data-testid="export-csv-button" className="bg-white/10 hover:bg-white/20 text-white"><Download size={16} className="mr-1.5" /> Export CSV</Button></DialogTrigger>
+            <DialogContent>
+              <DialogHeader><DialogTitle>Export Customer & Project Status</DialogTitle></DialogHeader>
+              <div className="flex items-center gap-2 py-2">
+                <Checkbox id="money" data-testid="export-money-checkbox" checked={inclMoney} onCheckedChange={(v) => setInclMoney(!!v)} />
+                <Label htmlFor="money">Also Include Monetary Values</Label>
+              </div>
+              <DialogFooter><Button data-testid="export-download-button" onClick={downloadCsv} className="bg-sky-600 hover:bg-sky-700">Download CSV</Button></DialogFooter>
+            </DialogContent>
+          </Dialog>
+        )} />
       <div className="p-6 lg:p-8 space-y-8">
         {sections.map(([title, cards]) => (
           <div key={title}>

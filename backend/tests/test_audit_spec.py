@@ -163,7 +163,7 @@ class TestOwnerOnlyEndpoints:
             r = requests.get(f"{API}/users", headers=_hdr(tokens[role]))
             assert r.status_code == 403, f"{role} GET /users must be 403"
             r = requests.post(f"{API}/users",
-                json={"username": "x_" + uuid.uuid4().hex[:4], "password": "p", "name": "x", "role": "LEAD"},
+                json={"username": "x_" + uuid.uuid4().hex[:4], "password": "p", "name": "x", "role": "LEAD", "phone": "9999999999"},
                 headers=_hdr(tokens[role]))
             assert r.status_code == 403
         r = requests.get(f"{API}/users", headers=_hdr(tokens["owner"]))
@@ -212,7 +212,7 @@ class TestSiteVisitAssigneeOnly:
         # Ensure a 2nd installation user exists via OWNER
         uname = "install2_" + uuid.uuid4().hex[:4]
         r = requests.post(f"{API}/users",
-            json={"username": uname, "password": "Pass@123", "name": "Install Two", "role": "INSTALLATION"},
+            json={"username": uname, "password": "Pass@123", "name": "Install Two", "role": "INSTALLATION", "phone": "9000000002"},
             headers=_hdr(tokens["owner"]))
         assert r.status_code == 200
         install2 = r.json()

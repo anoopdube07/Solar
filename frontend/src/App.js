@@ -14,6 +14,8 @@ import Escalations from "@/pages/Escalations";
 import Payments from "@/pages/Payments";
 import Users from "@/pages/Users";
 import SLAConfig from "@/pages/SLAConfig";
+import WorkDone from "@/pages/WorkDone";
+import LeadEmployees from "@/pages/LeadEmployees";
 
 function Protected({ children }) {
   const { user } = useAuth();
@@ -39,6 +41,8 @@ function App() {
             <Route path="/payments" element={<Protected><Payments /></Protected>} />
             <Route path="/users" element={<Protected><Users /></Protected>} />
             <Route path="/sla" element={<Protected><SLAConfig /></Protected>} />
+            <Route path="/work-done" element={<Protected><WorkDone /></Protected>} />
+            <Route path="/lead-employees" element={<Protected><LeadEmployees /></Protected>} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </BrowserRouter>

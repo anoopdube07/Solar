@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { useNavigate, useLocation } from "react-router-dom";
 import api, { apiError } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { PageHeader } from "@/components/ui-bits";
@@ -14,12 +15,17 @@ import { toast } from "sonner";
 
 export default function SiteVisits() {
   const { user } = useAuth();
+  const nav = useNavigate();
+  const loc = useLocation();
+  const statusParam = new URLSearchParams(loc.search).get("status") || "ALL";
   const [visits, setVisits] = useState([]);
   const [installers, setInstallers] = useState([]);
   const [assignDlg, setAssignDlg] = useState(null);
   const [completeDlg, setCompleteDlg] = useState(null);
   const [af, setAf] = useState({});
   const [survey, setSurvey] = useState("");
+  const statusFilter = statusParam;
+  const setStatusFilter = (v) => nav(v === "ALL" ? "/site-visits" : `/site-visits?status=${v}`);
 
   const load = () => api.get("/site-visits").then((r) => setVisits(r.data));
   useEffect(() => {
@@ -31,6 +37,7 @@ export default function SiteVisits() {
 
   const canAssign = user.role === "MANAGER" || user.role === "OWNER";
   const canComplete = user.role === "INSTALLATION" || user.role === "OWNER";
+  const shownVisits = visits.filter((v) => statusFilter === "ALL" || v.status === statusFilter);
 
   const doAssign = async () => {
     try { await api.post(`/site-visits/${assignDlg.id}/assign`, af); toast.success("Assigned"); setAssignDlg(null); setAf({}); load(); }
@@ -44,14 +51,23 @@ export default function SiteVisits() {
   return (
     <div>
       <PageHeader title="Site Visits" subtitle="Lead qualification site visits (not ECP installation)" />
-      <div className="p-6 lg:p-8">
-        <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
+      <div className="p-4 lg:p-8">
+        <div className="flex items-center gap-3 mb-4">
+          <Select value={statusFilter} onValueChange={setStatusFilter}>
+            <SelectTrigger data-testid="sv-status-filter" className="w-48"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {["ALL", "REQUESTED", "ASSIGNED", "DONE"].map((s) => <SelectItem key={s} value={s} data-testid={`sv-status-${s}`}>{s === "ALL" ? "All" : s === "DONE" ? "Completed" : s.charAt(0) + s.slice(1).toLowerCase()}</SelectItem>)}
+            </SelectContent>
+          </Select>
+          <span className="text-xs text-slate-400 font-mono">{shownVisits.length} visit(s)</span>
+        </div>
+        <div className="bg-white rounded-lg border border-slate-200 overflow-x-auto">
           <Table>
             <TableHeader className="bg-slate-50">
               <TableRow><TableHead>Lead</TableHead><TableHead>Status</TableHead><TableHead>Assigned To</TableHead><TableHead>Visit Date</TableHead><TableHead>Survey</TableHead><TableHead>Action</TableHead></TableRow>
             </TableHeader>
             <TableBody>
-              {visits.map((v) => (
+              {shownVisits.map((v) => (
                 <TableRow key={v.id} data-testid={`sv-row-${v.id}`}>
                   <TableCell className="font-semibold">{v.lead_name}</TableCell>
                   <TableCell><span className="text-xs font-semibold px-2 py-0.5 rounded-full border bg-slate-100">{v.status}</span></TableCell>
@@ -64,7 +80,7 @@ export default function SiteVisits() {
                   </TableCell>
                 </TableRow>
               ))}
-              {visits.length === 0 && <TableRow><TableCell colSpan={6} className="text-center text-slate-400 py-10">No site visits.</TableCell></TableRow>}
+              {shownVisits.length === 0 && <TableRow><TableCell colSpan={6} className="text-center text-slate-400 py-10">No site visits.</TableCell></TableRow>}
             </TableBody>
           </Table>
         </div>

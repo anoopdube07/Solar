@@ -24,14 +24,15 @@ export default function Users() {
   const load = () => api.get("/users").then((r) => setUsers(r.data));
   useEffect(() => { load(); }, []);
 
-  const openNew = () => { setEdit(null); setF({ username: "", password: "", name: "", role: "LEAD" }); setDlg(true); };
-  const openEdit = (u) => { setEdit(u); setF({ name: u.name, role: u.role, password: "" }); setDlg(true); };
+  const openNew = () => { setEdit(null); setF({ username: "", password: "", name: "", role: "LEAD", phone: "" }); setDlg(true); };
+  const openEdit = (u) => { setEdit(u); setF({ name: u.name, role: u.role, phone: u.phone || "", password: "" }); setDlg(true); };
 
   const save = async () => {
     try {
       if (edit) {
-        await api.patch(`/users/${edit.id}`, { name: f.name, role: f.role, password: f.password || undefined });
+        await api.patch(`/users/${edit.id}`, { name: f.name, role: f.role, phone: f.phone, password: f.password || undefined });
       } else {
+        if (!f.phone || !f.phone.trim()) { toast.error("Phone number is required"); return; }
         await api.post("/users", f);
       }
       toast.success("Saved"); setDlg(false); load();
@@ -51,13 +52,14 @@ export default function Users() {
         <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
           <Table>
             <TableHeader className="bg-slate-50">
-              <TableRow><TableHead>Name</TableHead><TableHead>Username</TableHead><TableHead>Role / Team</TableHead><TableHead>Active</TableHead><TableHead></TableHead></TableRow>
+              <TableRow><TableHead>Name</TableHead><TableHead>Username</TableHead><TableHead>Phone</TableHead><TableHead>Role / Team</TableHead><TableHead>Active</TableHead><TableHead></TableHead></TableRow>
             </TableHeader>
             <TableBody>
               {users.map((u) => (
                 <TableRow key={u.id} data-testid={`user-row-${u.id}`}>
                   <TableCell className="font-semibold">{u.name}</TableCell>
                   <TableCell className="font-mono text-sm">{u.username}</TableCell>
+                  <TableCell className="text-sm">{u.phone || "—"}</TableCell>
                   <TableCell>{ROLE_LABELS[u.role]}</TableCell>
                   <TableCell><Switch data-testid={`user-active-${u.id}`} checked={u.active} onCheckedChange={() => toggleActive(u)} /></TableCell>
                   <TableCell><Button size="sm" variant="outline" data-testid={`edit-user-${u.id}`} onClick={() => openEdit(u)}>Edit</Button></TableCell>
@@ -74,6 +76,7 @@ export default function Users() {
           <div className="space-y-3">
             {!edit && <div><Label>Username *</Label><Input data-testid="user-username-input" value={f.username || ""} onChange={(e) => setF({ ...f, username: e.target.value })} /></div>}
             <div><Label>Name *</Label><Input data-testid="user-name-input" value={f.name || ""} onChange={(e) => setF({ ...f, name: e.target.value })} /></div>
+            <div><Label>Phone Number *</Label><Input data-testid="user-phone-input" value={f.phone || ""} onChange={(e) => setF({ ...f, phone: e.target.value })} /></div>
             <div><Label>Role / Team *</Label>
               <Select value={f.role} onValueChange={(v) => setF({ ...f, role: v })}>
                 <SelectTrigger data-testid="user-role-select"><SelectValue /></SelectTrigger>

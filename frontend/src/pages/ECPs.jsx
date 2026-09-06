@@ -12,6 +12,29 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 
 // Filter options per role: [value, label, {stage|view}]
 const FILTERS = {
+  LEAD: [
+    ["ALL", "All", {}],
+    ["REGISTRATION_1", "Registration 1", { stage: "REGISTRATION_1" }],
+    ["ACCOUNTS_1", "Accounts 1", { stage: "ACCOUNTS_1" }],
+    ["DISPATCH", "Dispatch", { stage: "DISPATCH" }],
+    ["INSTALLATION", "Installation", { stage: "INSTALLATION" }],
+    ["NET_METERING", "Net Metering", { stage: "NET_METERING" }],
+    ["REGISTRATION_2", "Registration 2", { stage: "REGISTRATION_2" }],
+    ["ACCOUNTS_2", "Accounts 2", { stage: "ACCOUNTS_2" }],
+    ["CLOSED", "Closed", { view: "CLOSED" }],
+  ],
+  MANAGER: [
+    ["ALL", "All", {}],
+    ["REGISTRATION_1", "Registration 1", { stage: "REGISTRATION_1" }],
+    ["ACCOUNTS_1", "Accounts 1", { stage: "ACCOUNTS_1" }],
+    ["DISPATCH", "Dispatch", { stage: "DISPATCH" }],
+    ["AWAITING_ASSIGNMENT", "Awaiting Install Assignment", { view: "AWAITING_ASSIGNMENT" }],
+    ["INSTALLATION", "Installation", { stage: "INSTALLATION" }],
+    ["NET_METERING", "Net Metering", { stage: "NET_METERING" }],
+    ["REGISTRATION_2", "Registration 2", { stage: "REGISTRATION_2" }],
+    ["ACCOUNTS_2", "Accounts 2", { stage: "ACCOUNTS_2" }],
+    ["CLOSED", "Closed", { view: "CLOSED" }],
+  ],
   REGISTRATION: [
     ["ALL", "All", {}],
     ["REGISTRATION_1", "Registration 1", { stage: "REGISTRATION_1" }],

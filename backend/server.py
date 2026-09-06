@@ -19,6 +19,8 @@ from auth import (
     hash_password, verify_password, create_access_token, decode_token, extract_token,
 )
 import workflow as wf
+from extras import ist_today_str, ist_day_bounds, to_csv
+from fastapi.responses import Response
 
 # ---- DB ----
 client = AsyncIOMotorClient(os.environ["MONGO_URL"])
@@ -92,12 +94,14 @@ class UserCreate(BaseModel):
     password: str
     name: str
     role: str
+    phone: str
     team: Optional[str] = None
 
 
 class UserUpdate(BaseModel):
     name: Optional[str] = None
     role: Optional[str] = None
+    phone: Optional[str] = None
     team: Optional[str] = None
     active: Optional[bool] = None
     password: Optional[str] = None
@@ -132,6 +136,8 @@ async def create_user(body: UserCreate, user: dict = Depends(get_current_user)):
     require(user, "OWNER")
     if body.role not in wf.ROLES:
         raise HTTPException(status_code=400, detail="Invalid role")
+    if not (body.phone or "").strip():
+        raise HTTPException(status_code=400, detail="Phone number is required")
     username = body.username.strip().lower()
     if await db.users.find_one({"username": username}):
         raise HTTPException(status_code=400, detail="Username already exists")
@@ -142,6 +148,7 @@ async def create_user(body: UserCreate, user: dict = Depends(get_current_user)):
         "name": body.name.strip(),
         "role": body.role,
         "team": body.role,  # one user = one role = one team
+        "phone": body.phone.strip(),
         "active": True,
         "created_at": now_iso(),
     }
@@ -167,6 +174,8 @@ async def update_user(user_id: str, body: UserUpdate, user: dict = Depends(get_c
         upd["active"] = body.active
     if body.password:
         upd["password_hash"] = hash_password(body.password)
+    if body.phone is not None:
+        upd["phone"] = body.phone.strip()
     if upd:
         await db.users.update_one({"id": user_id}, {"$set": upd})
     fresh = await db.users.find_one({"id": user_id}, NO_ID)
@@ -214,6 +223,7 @@ class LeadCreate(BaseModel):
     source: Optional[str] = ""
     financing_required: bool = False
     project_price: Optional[float] = 0
+    lead_creator_id: Optional[str] = None
     remarks: Optional[str] = ""
 
 
@@ -235,13 +245,19 @@ def lead_visible_roles():
 
 
 @api.get("/leads")
-async def list_leads(status: Optional[str] = None, user: dict = Depends(get_current_user)):
+async def list_leads(status: Optional[str] = None, followup: Optional[str] = None, user: dict = Depends(get_current_user)):
     if user["role"] not in lead_visible_roles():
         # other teams get read-only limited visibility (qualified leads linked to ECPs they see)
         return []
     q = {}
     if status:
         q["status"] = status
+    if followup == "today":
+        today = ist_today_str()
+        fus = await db.lead_followups.find({}, NO_ID).to_list(10000)
+        lead_ids = list({f["lead_id"] for f in fus if (f.get("followup_date") or "")[:10] == today})
+        q["id"] = {"$in": lead_ids}
+        q["status"] = "FOLLOW_UP"
     leads = await db.leads.find(q, NO_ID).sort("created_at", -1).to_list(2000)
     return leads
 
@@ -249,6 +265,12 @@ async def list_leads(status: Optional[str] = None, user: dict = Depends(get_curr
 @api.post("/leads")
 async def create_lead(body: LeadCreate, user: dict = Depends(get_current_user)):
     require(user, "LEAD", "OWNER")
+    creator_id, creator_name = None, None
+    if body.lead_creator_id:
+        emp = await db.lead_employees.find_one({"id": body.lead_creator_id}, NO_ID)
+        if not emp or not emp.get("active", True):
+            raise HTTPException(status_code=400, detail="Invalid or inactive Lead Creator")
+        creator_id, creator_name = emp["id"], emp["name"]
     doc = {
         "id": new_id(),
         "name": body.name.strip(),
@@ -263,6 +285,8 @@ async def create_lead(body: LeadCreate, user: dict = Depends(get_current_user)):
         "return_reason": None,
         "financing_required": bool(body.financing_required),
         "project_price": float(body.project_price or 0),
+        "lead_creator_id": creator_id,
+        "lead_creator_name": creator_name,
         "lost_reason": None,
         "lost_remarks": None,
         "ecp_id": None,
@@ -272,6 +296,7 @@ async def create_lead(body: LeadCreate, user: dict = Depends(get_current_user)):
         "updated_at": now_iso(),
     }
     await db.leads.insert_one(doc)
+    await log_activity(user, "Lead Created", "LEAD", doc["id"], doc["name"], f"Creator: {creator_name or '—'}")
     d = dict(doc)
     d.pop("_id", None)
     return d
@@ -318,6 +343,8 @@ async def create_ecp_from_lead(lead: dict, user: dict):
         "lead_name": lead["name"],
         "customer_phone": lead.get("phone", ""),
         "project_price": float(lead.get("project_price") or 0),
+        "lead_creator_id": lead.get("lead_creator_id"),
+        "lead_creator_name": lead.get("lead_creator_name"),
         "current_stage": "REGISTRATION_1",
         "current_team": wf.STAGE_TEAM["REGISTRATION_1"],
         "responsible_user": None,
@@ -438,6 +465,8 @@ async def lead_action(lead_id: str, body: LeadAction, user: dict = Depends(get_c
             "status": "ESCALATED", "action_required": False, "current_team": "OWNER",
             "return_reason": None, "updated_at": now_iso()}})
 
+    await log_activity(user, f"Lead Action: {action}", "LEAD", lead_id, lead["name"],
+                       body.remarks or body.reason or body.lost_reason or "")
     return await _lead_bundle(lead_id)
 
 
@@ -506,6 +535,7 @@ async def assign_site_visit(sv_id: str, body: AssignSiteVisit, user: dict = Depe
         "status": "ASSIGNED", "assigned_user": body.assigned_user,
         "assigned_user_name": emp["name"], "visit_date": body.visit_date,
         "assigned_by": user["id"], "assigned_by_name": user["name"]}})
+    await log_activity(user, "Site Visit Assigned", "LEAD", sv["lead_id"], sv.get("lead_name", ""), f"To {emp['name']}")
     return await db.lead_site_visits.find_one({"id": sv_id}, NO_ID)
 
 
@@ -531,6 +561,7 @@ async def complete_site_visit(sv_id: str, body: CompleteSiteVisit, user: dict = 
     await db.leads.update_one({"id": sv["lead_id"]}, {"$set": {
         "status": "PENDING", "action_required": True, "current_team": "LEAD",
         "return_reason": "SITE_VISIT_COMPLETED", "updated_at": now_iso()}})
+    await log_activity(user, "Site Visit Completed", "LEAD", sv["lead_id"], sv.get("lead_name", ""), "")
     return await db.lead_site_visits.find_one({"id": sv_id}, NO_ID)
 
 
@@ -560,6 +591,7 @@ async def return_escalation(esc_id: str, body: ReturnEscalation, user: dict = De
     await db.leads.update_one({"id": esc["lead_id"]}, {"$set": {
         "status": "PENDING", "action_required": True, "current_team": "LEAD",
         "return_reason": "OWNER_RETURNED", "updated_at": now_iso()}})
+    await log_activity(user, "Escalation Returned", "LEAD", esc["lead_id"], esc.get("lead_name", ""), "Owner remarks added")
     return await db.lead_escalations.find_one({"id": esc_id}, NO_ID)
 
 
@@ -642,6 +674,10 @@ def _matches_view(e: dict, view: str) -> bool:
                 or e["status"] in ("COMPLETED", "CLOSED"))
     if view == "DELAYED":
         return bool(e.get("delayed"))
+    if view == "CLOSED":
+        return e["status"] == "CLOSED"
+    if view == "COMPLETED":
+        return e["status"] == "COMPLETED"
     return True
 
 
@@ -707,6 +743,8 @@ async def _advance_stage(ecp: dict, user: dict, note: str = ""):
         "id": new_id(), "ecp_id": ecp["id"], "from_stage": from_stage, "to_stage": to_label,
         "changed_by": user["id"], "changed_by_name": user["name"], "changed_at": now_iso(),
         "note": note or "Stage advanced"})
+    await log_activity(user, "ECP Stage Advanced", "ECP", ecp["id"], ecp.get("lead_name", ""),
+                       f"{wf.STAGE_LABELS.get(from_stage, from_stage)} → {wf.STAGE_LABELS.get(to_label, to_label)}")
 
 
 async def _maybe_advance(ecp_id: str, user: dict):
@@ -801,6 +839,7 @@ async def assign_installation(ecp_id: str, body: AssignInstallation, user: dict 
         "id": new_id(), "ecp_id": ecp_id, "from_stage": "INSTALLATION", "to_stage": "INSTALLATION",
         "changed_by": user["id"], "changed_by_name": user["name"], "changed_at": now_iso(),
         "note": f"Installation assigned to {emp['name']}"})
+    await log_activity(user, "Installation Assigned", "ECP", ecp_id, ecp.get("lead_name", ""), f"To {emp['name']}")
     return await get_ecp(ecp_id, user)
 
 
@@ -880,6 +919,7 @@ async def close_ecp(ecp_id: str, body: CloseBody, user: dict = Depends(get_curre
         "id": new_id(), "ecp_id": ecp_id, "from_stage": ecp["current_stage"], "to_stage": "CLOSED",
         "changed_by": user["id"], "changed_by_name": user["name"], "changed_at": now_iso(),
         "note": f"Manually closed/cancelled: {body.reason}"})
+    await log_activity(user, "ECP Closed", "ECP", ecp_id, ecp.get("lead_name", ""), body.reason)
     return await get_ecp(ecp_id, user)
 
 
@@ -920,6 +960,8 @@ async def create_payment(body: PaymentCreate, user: dict = Depends(get_current_u
         "updated_by": user["id"], "updated_by_name": user["name"], "updated_at": now_iso(),
         "created_at": now_iso()}
     await db.payments.insert_one(doc)
+    await log_activity(user, "Payment Created", "ECP", body.ecp_id, ecp.get("lead_name", ""),
+                       f"{body.type} {body.status} ₹{body.amount}")
     d = dict(doc)
     d.pop("_id", None)
     return d
@@ -943,6 +985,9 @@ async def update_payment(payment_id: str, body: PaymentUpdate, user: dict = Depe
     if body.remarks is not None:
         upd["remarks"] = body.remarks.strip()
     await db.payments.update_one({"id": payment_id}, {"$set": upd})
+    ecp = await db.ecps.find_one({"id": pay["ecp_id"]}, NO_ID)
+    await log_activity(user, "Payment Updated", "ECP", pay["ecp_id"], (ecp or {}).get("lead_name", ""),
+                       f"{pay['type']} → {upd.get('status', pay['status'])}")
     return await db.payments.find_one({"id": payment_id}, NO_ID)
 
 
@@ -976,6 +1021,7 @@ async def payment_monitor(user: dict = Depends(get_current_user)):
         calc = _ecp_receivable(e, ps)
         rows.append({
             "ecp_id": e["id"], "lead_name": e["lead_name"], "customer_phone": e.get("customer_phone", ""),
+            "lead_creator_name": e.get("lead_creator_name"),
             "stage": e["current_stage"],
             "stage_label": wf.STAGE_LABELS.get(e["current_stage"], e["current_stage"]),
             "status": e["status"], "payments": ps, **calc})
@@ -1116,6 +1162,108 @@ async def meta(user: dict = Depends(get_current_user)):
         "stage_order": wf.STAGE_ORDER, "stage_labels": wf.STAGE_LABELS,
         "lost_reasons": wf.LOST_REASONS, "closure_reasons": wf.CLOSURE_REASONS,
     }
+
+
+# ========================= ACTIVITIES (lightweight work-done log) =========================
+async def log_activity(user, activity, ref_type, ref_id, customer_name="", details=""):
+    try:
+        await db.activities.insert_one({
+            "id": new_id(), "ts": now_iso(), "user_id": user.get("id"),
+            "user_name": user.get("name"), "team": user.get("role"),
+            "customer_name": customer_name, "ref_type": ref_type, "ref_id": ref_id,
+            "activity": activity, "details": details})
+    except Exception:
+        pass
+
+
+@api.get("/activities")
+async def list_activities(date: Optional[str] = None, activity_user: Optional[str] = None,
+                          team: Optional[str] = None, activity: Optional[str] = None,
+                          user: dict = Depends(get_current_user)):
+    require(user, "OWNER")
+    d = date or ist_today_str()
+    start, end = ist_day_bounds(d)
+    q = {"ts": {"$gte": start, "$lt": end}}
+    if activity_user:
+        q["user_id"] = activity_user
+    if team:
+        q["team"] = team
+    if activity:
+        q["activity"] = activity
+    return await db.activities.find(q, NO_ID).sort("ts", -1).to_list(5000)
+
+
+# ========================= LEAD EMPLOYEE MASTER =========================
+class LeadEmpCreate(BaseModel):
+    name: str
+
+
+class LeadEmpUpdate(BaseModel):
+    name: Optional[str] = None
+    active: Optional[bool] = None
+
+
+@api.get("/lead-employees")
+async def list_lead_employees(active_only: Optional[bool] = False, user: dict = Depends(get_current_user)):
+    require(user, "OWNER", "MANAGER", "LEAD", "ACCOUNTS")
+    q = {"active": True} if active_only else {}
+    return await db.lead_employees.find(q, NO_ID).sort("name", 1).to_list(1000)
+
+
+@api.post("/lead-employees")
+async def create_lead_employee(body: LeadEmpCreate, user: dict = Depends(get_current_user)):
+    require(user, "OWNER")
+    if not body.name.strip():
+        raise HTTPException(status_code=400, detail="Name is required")
+    doc = {"id": new_id(), "name": body.name.strip(), "active": True, "created_at": now_iso()}
+    await db.lead_employees.insert_one(doc)
+    d = dict(doc); d.pop("_id", None)
+    return d
+
+
+@api.patch("/lead-employees/{emp_id}")
+async def update_lead_employee(emp_id: str, body: LeadEmpUpdate, user: dict = Depends(get_current_user)):
+    require(user, "OWNER")
+    emp = await db.lead_employees.find_one({"id": emp_id}, NO_ID)
+    if not emp:
+        raise HTTPException(status_code=404, detail="Lead employee not found")
+    upd = {}
+    if body.name is not None:
+        upd["name"] = body.name.strip()
+    if body.active is not None:
+        upd["active"] = body.active
+    if upd:
+        await db.lead_employees.update_one({"id": emp_id}, {"$set": upd})
+    return await db.lead_employees.find_one({"id": emp_id}, NO_ID)
+
+
+# ========================= CSV EXPORT (Owner only) =========================
+@api.get("/export/projects")
+async def export_projects(include_money: bool = False, user: dict = Depends(get_current_user)):
+    require(user, "OWNER")
+    ecps = await db.ecps.find({}, NO_ID).sort("created_at", -1).to_list(5000)
+    payments = await db.payments.find({}, NO_ID).to_list(10000)
+    by_ecp = {}
+    for p in payments:
+        by_ecp.setdefault(p["ecp_id"], []).append(p)
+    base_headers = ["Customer", "Phone", "Lead ID", "ECP ID", "Current Stage", "Current Team",
+                    "Responsible Employee", "Lead Creator", "Status", "Created At"]
+    money_headers = ["Project Price", "First Received", "Subsequent Received", "Total Received", "Total Receivable"]
+    headers = base_headers + (money_headers if include_money else [])
+    rows = []
+    for e in ecps:
+        row = [e.get("lead_name", ""), e.get("customer_phone", ""), e.get("lead_id", ""), e["id"],
+               wf.STAGE_LABELS.get(e["current_stage"], e["current_stage"]), e.get("current_team") or "",
+               e.get("responsible_user_name") or "", e.get("lead_creator_name") or "",
+               e.get("status", ""), (e.get("created_at") or "")[:10]]
+        if include_money:
+            calc = _ecp_receivable(e, by_ecp.get(e["id"], []))
+            row += [calc["project_price"], calc["first_confirmed_amount"], calc["subsequent_confirmed_amount"],
+                    calc["total_received"], calc["total_receivable"]]
+        rows.append(row)
+    csv_data = to_csv(headers, rows)
+    return Response(content=csv_data, media_type="text/csv",
+                    headers={"Content-Disposition": "attachment; filename=projects.csv"})
 
 
 app.include_router(api)

@@ -4,16 +4,19 @@ import api, { apiError } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { PageHeader } from "@/components/ui-bits";
 import { StatusBadge } from "@/components/StatusBadge";
-import { RETURN_REASON_LABELS } from "@/lib/constants";
+import { RETURN_REASON_LABELS, LEAD_STATUS_LABELS } from "@/lib/constants";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogTrigger } from "@/components/ui/dialog";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Plus, Search } from "lucide-react";
 import { toast } from "sonner";
+
+const STATUS_OPTS = ["ALL", "PENDING", "FOLLOW_UP", "SITE_VISIT", "ESCALATED", "QUALIFIED", "LOST"];
 
 export default function Leads() {
   const { user } = useAuth();
@@ -21,30 +24,41 @@ export default function Leads() {
   const loc = useLocation();
   const params = new URLSearchParams(loc.search);
   const statusFilter = params.get("status") || "";
+  const followupFilter = params.get("followup") || "";
   const [leads, setLeads] = useState([]);
+  const [employees, setEmployees] = useState([]);
   const [q, setQ] = useState("");
   const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({ name: "", phone: "", email: "", address: "", source: "", financing_required: false, project_price: "", remarks: "" });
+  const [form, setForm] = useState({ name: "", phone: "", email: "", address: "", source: "", financing_required: false, project_price: "", lead_creator_id: "", remarks: "" });
 
-  const load = () => api.get("/leads").then((r) => setLeads(r.data));
-  useEffect(() => { load(); }, []);
+  const load = () => {
+    const p = new URLSearchParams();
+    if (statusFilter) p.set("status", statusFilter);
+    if (followupFilter) p.set("followup", followupFilter);
+    api.get(`/leads${p.toString() ? "?" + p.toString() : ""}`).then((r) => setLeads(r.data));
+  };
+  useEffect(() => { load(); }, [statusFilter, followupFilter]);
+  useEffect(() => { api.get("/lead-employees?active_only=true").then((r) => setEmployees(r.data)).catch(() => {}); }, []);
 
   const canCreate = user.role === "LEAD" || user.role === "OWNER";
-  const filtered = leads.filter((l) =>
-    (!statusFilter || l.status === statusFilter) &&
-    (!q || l.name.toLowerCase().includes(q.toLowerCase()) || (l.phone || "").includes(q))
-  );
+  const filtered = leads.filter((l) => !q || l.name.toLowerCase().includes(q.toLowerCase()) || (l.phone || "").includes(q));
 
   const create = async () => {
     if (!form.name || !form.phone) { toast.error("Name and phone are required"); return; }
     try {
-      await api.post("/leads", { ...form, project_price: parseFloat(form.project_price) || 0 });
+      await api.post("/leads", { ...form, project_price: parseFloat(form.project_price) || 0, lead_creator_id: form.lead_creator_id || null });
       toast.success("Lead created");
       setOpen(false);
-      setForm({ name: "", phone: "", email: "", address: "", source: "", financing_required: false, project_price: "", remarks: "" });
+      setForm({ name: "", phone: "", email: "", address: "", source: "", financing_required: false, project_price: "", lead_creator_id: "", remarks: "" });
       load();
     } catch (e) { toast.error(apiError(e.response?.data?.detail)); }
   };
+
+  const setStatus = (v) => {
+    if (v === "ALL") nav("/leads");
+    else nav(`/leads?status=${v}`);
+  };
+  const activeStatus = followupFilter ? "FOLLOW_TODAY" : (statusFilter || "ALL");
 
   return (
     <div>
@@ -54,11 +68,17 @@ export default function Leads() {
             <DialogTrigger asChild>
               <Button data-testid="new-lead-button" className="bg-sky-600 hover:bg-sky-700"><Plus size={16} className="mr-1" /> New Lead</Button>
             </DialogTrigger>
-            <DialogContent>
+            <DialogContent className="max-h-[90vh] overflow-y-auto">
               <DialogHeader><DialogTitle>Create Lead</DialogTitle></DialogHeader>
               <div className="space-y-3">
                 <div><Label>Name *</Label><Input data-testid="lead-name-input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></div>
                 <div><Label>Phone *</Label><Input data-testid="lead-phone-input" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} /></div>
+                <div><Label>Lead Creator</Label>
+                  <Select value={form.lead_creator_id} onValueChange={(v) => setForm({ ...form, lead_creator_id: v })}>
+                    <SelectTrigger data-testid="lead-creator-select"><SelectValue placeholder="Select employee" /></SelectTrigger>
+                    <SelectContent>{employees.map((e) => <SelectItem key={e.id} value={e.id}>{e.name}</SelectItem>)}</SelectContent>
+                  </Select>
+                </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div><Label>Email</Label><Input value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} /></div>
                   <div><Label>Source</Label><Input value={form.source} onChange={(e) => setForm({ ...form, source: e.target.value })} /></div>
@@ -76,21 +96,24 @@ export default function Leads() {
           </Dialog>
         )}
       />
-      <div className="p-6 lg:p-8">
-        <div className="flex items-center gap-3 mb-4">
-          <div className="relative flex-1 max-w-sm">
+      <div className="p-4 lg:p-8">
+        <div className="flex flex-wrap items-center gap-3 mb-4">
+          <div className="relative flex-1 max-w-sm min-w-[200px]">
             <Search size={16} className="absolute left-3 top-2.5 text-slate-400" />
             <Input data-testid="lead-search" className="pl-9" placeholder="Search name or phone…" value={q} onChange={(e) => setQ(e.target.value)} />
           </div>
-          {statusFilter && <StatusBadge value={statusFilter} />}
-          {statusFilter && <button className="text-xs text-sky-600 underline" onClick={() => nav("/leads")}>clear</button>}
+          <Select value={activeStatus === "FOLLOW_TODAY" ? "ALL" : activeStatus} onValueChange={setStatus}>
+            <SelectTrigger data-testid="lead-status-filter" className="w-44"><SelectValue /></SelectTrigger>
+            <SelectContent>{STATUS_OPTS.map((s) => <SelectItem key={s} value={s} data-testid={`lead-status-${s}`}>{s === "ALL" ? "All Statuses" : LEAD_STATUS_LABELS[s]}</SelectItem>)}</SelectContent>
+          </Select>
+          {followupFilter === "today" && <span className="text-xs font-semibold text-sky-700">Follow-ups Today <button className="underline ml-1" onClick={() => nav("/leads")}>clear</button></span>}
         </div>
-        <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
+        <div className="bg-white rounded-lg border border-slate-200 overflow-x-auto">
           <Table>
             <TableHeader className="bg-slate-50">
               <TableRow>
                 <TableHead>Name</TableHead><TableHead>Phone</TableHead><TableHead>Status</TableHead>
-                <TableHead>Current Team</TableHead><TableHead>Note</TableHead><TableHead>Action</TableHead>
+                <TableHead>Lead Creator</TableHead><TableHead>Current Team</TableHead><TableHead>Note</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -99,12 +122,12 @@ export default function Leads() {
                   <TableCell className="font-semibold text-slate-900">{l.name}</TableCell>
                   <TableCell className="font-mono text-sm">{l.phone}</TableCell>
                   <TableCell><StatusBadge value={l.status} /></TableCell>
+                  <TableCell className="text-sm">{l.lead_creator_name || "—"}</TableCell>
                   <TableCell className="text-sm">{l.current_team || "—"}</TableCell>
                   <TableCell className="text-xs text-slate-500">
                     {l.action_required && <span className="text-amber-600 font-semibold">Action Required</span>}
                     {l.return_reason && <span className="ml-1">· {RETURN_REASON_LABELS[l.return_reason]}</span>}
                   </TableCell>
-                  <TableCell><Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); nav(`/leads/${l.id}`); }}>Open</Button></TableCell>
                 </TableRow>
               ))}
               {filtered.length === 0 && <TableRow><TableCell colSpan={6} className="text-center text-slate-400 py-10">No leads found.</TableCell></TableRow>}

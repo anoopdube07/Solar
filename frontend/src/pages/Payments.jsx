@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router-dom";
 import api, { apiError } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { PageHeader } from "@/components/ui-bits";
@@ -25,6 +25,8 @@ const TYPE_OPTIONS = [
 export default function Payments() {
   const { user } = useAuth();
   const nav = useNavigate();
+  const loc = useLocation();
+  const viewParam = new URLSearchParams(loc.search).get("view") || "";
   const [rows, setRows] = useState([]);
   const [q, setQ] = useState("");
   const [dlg, setDlg] = useState(false);
@@ -45,21 +47,33 @@ export default function Payments() {
     } catch (e) { toast.error(apiError(e.response?.data?.detail)); }
   };
 
-  const filtered = rows.filter((r) => !q || r.lead_name.toLowerCase().includes(q.toLowerCase()));
+  const matchesView = (r) => {
+    if (r.status !== "ACTIVE") return viewParam ? false : true;
+    if (viewParam === "first_pending") return !r.first_payment_confirmed;
+    if (viewParam === "subsequent") return r.first_payment_confirmed && r.total_receivable > 0;
+    if (viewParam === "receivable") return r.total_receivable > 0;
+    return true;
+  };
+  const filtered = rows.filter((r) => (!q || r.lead_name.toLowerCase().includes(q.toLowerCase())) && matchesView(r));
+  const VIEW_LABELS = { first_pending: "First Payment Pending", subsequent: "Subsequent Payment Follow-up", receivable: "Total Receivable" };
 
   return (
     <div>
       <PageHeader title="Payments" subtitle="Project-wise receivables. Only Accounts can record payments." />
-      <div className="p-6 lg:p-8">
-        <div className="relative max-w-sm mb-4">
-          <Search size={16} className="absolute left-3 top-2.5 text-slate-400" />
-          <Input data-testid="payment-search" className="pl-9" placeholder="Search project / customer…" value={q} onChange={(e) => setQ(e.target.value)} />
+      <div className="p-4 lg:p-8">
+        <div className="flex flex-wrap items-center gap-3 mb-4">
+          <div className="relative max-w-sm flex-1 min-w-[200px]">
+            <Search size={16} className="absolute left-3 top-2.5 text-slate-400" />
+            <Input data-testid="payment-search" className="pl-9" placeholder="Search project / customer…" value={q} onChange={(e) => setQ(e.target.value)} />
+          </div>
+          {viewParam && <span className="text-xs font-semibold text-sky-700" data-testid="payment-view-chip">{VIEW_LABELS[viewParam]} <button className="underline ml-1" onClick={() => nav("/payments")}>clear</button></span>}
+          <span className="text-xs text-slate-400 font-mono">{filtered.length} project(s)</span>
         </div>
         <div className="bg-white rounded-lg border border-slate-200 overflow-x-auto">
           <Table>
             <TableHeader className="bg-slate-50">
               <TableRow>
-                <TableHead>Customer</TableHead><TableHead>Stage</TableHead>
+                <TableHead>Customer</TableHead><TableHead>Lead Creator</TableHead><TableHead>Stage</TableHead>
                 <TableHead className="text-right">Project Price</TableHead>
                 <TableHead className="text-right">First</TableHead>
                 <TableHead className="text-right">Subsequent</TableHead>
@@ -74,6 +88,7 @@ export default function Payments() {
                   <TableCell>
                     <button className="font-semibold text-sky-700 hover:underline" onClick={() => setDetail(r)}>{r.lead_name}</button>
                   </TableCell>
+                  <TableCell className="text-sm">{r.lead_creator_name || "—"}</TableCell>
                   <TableCell><StatusBadge value={r.stage} /></TableCell>
                   <TableCell className="text-right font-mono">{fmt(r.project_price)}</TableCell>
                   <TableCell className="text-right font-mono">{fmt(r.first_confirmed_amount)}</TableCell>
@@ -85,7 +100,7 @@ export default function Payments() {
                   </TableCell>
                 </TableRow>
               ))}
-              {filtered.length === 0 && <TableRow><TableCell colSpan={8} className="text-center text-slate-400 py-10">No projects.</TableCell></TableRow>}
+              {filtered.length === 0 && <TableRow><TableCell colSpan={9} className="text-center text-slate-400 py-10">No projects.</TableCell></TableRow>}
             </TableBody>
           </Table>
         </div>

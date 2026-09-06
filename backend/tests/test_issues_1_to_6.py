@@ -263,7 +263,7 @@ class TestIssue5InstallHandoff:
         ecp_id = _drive_to_installation_awaiting(tokens)
         uname = "install_x_" + uuid.uuid4().hex[:4]
         r = requests.post(f"{API}/users",
-            json={"username": uname, "password": "Pass@123", "name": "Install X", "role": "INSTALLATION"},
+            json={"username": uname, "password": "Pass@123", "name": "Install X", "role": "INSTALLATION", "phone": "9000000000"},
             headers=_hdr(tokens["owner"]))
         assert r.status_code == 200
         other = r.json()
@@ -285,7 +285,7 @@ class TestIssue5InstallHandoff:
         ecp_id = _drive_to_installation_awaiting(tokens)
         uname = "install_y_" + uuid.uuid4().hex[:4]
         r = requests.post(f"{API}/users",
-            json={"username": uname, "password": "Pass@123", "name": "Install Y", "role": "INSTALLATION"},
+            json={"username": uname, "password": "Pass@123", "name": "Install Y", "role": "INSTALLATION", "phone": "9000000001"},
             headers=_hdr(tokens["owner"]))
         assert r.status_code == 200
         other = r.json()

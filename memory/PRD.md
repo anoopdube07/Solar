@@ -41,5 +41,18 @@ OWNER, MANAGER (Process Owner), LEAD, REGISTRATION, ACCOUNTS, DISPATCH, INSTALLA
 - Issue 6: New `GET /users/team/{role}` (Manager/Owner) populates the installer dropdown for Lead Site Visit assignment (Site Visit workflow otherwise untouched).
 - Verified: 48/48 backend tests pass (backend_test.py + test_audit_spec.py + test_issues_1_to_6.py); frontend smoke 7/7. No Phase 1 regressions.
 
+## Iteration 3 (2026-09-06) — Issues 7-19
+- 7: Lead Employee master (`lead_employees`, Owner-managed); Lead create has Lead Creator dropdown; `lead_creator_id`+snapshot `lead_creator_name` stored on lead and copied to ECP (history-safe).
+- 8/9/10/11: Lead Team Leads status filter + ECP stage filter; Action Required→`?status=PENDING`; Follow Up Today→`?followup=today` (IST, date-based via `lead_followups`).
+- 12/13: Accounts tiles drill into project-wise Payments with `view=first_pending|subsequent|receivable`; formulas match dashboard; PENDING never counts.
+- 14: Lead Creator shown in Payments monitor + ECP detail (read-only).
+- 15: `phone` added to user model; mandatory on create (FE+BE); existing users unaffected.
+- 16: Lightweight `activities` collection + Owner-only `/work-done` report (IST today default; filters date/user/team/activity).
+- 17: Owner-only CSV export `/api/export/projects?include_money=` (money columns toggle).
+- 18: Manager Leads/Site Visits/ECP filters + dashboard tile drill-downs.
+- 19: Responsive Layout (hamburger drawer on mobile, fixed sidebar on desktop); tables scroll; dialogs fit.
+- New: `extras.py` (IST helpers, CSV). Schema additive: users.phone, leads/ecps.lead_creator_*, collections `lead_employees`, `activities`.
+- Verified: 77 backend cases (76 pass; the 1 failure — payment_monitor missing lead_creator_name — was then FIXED and re-verified via API). Frontend smoke incl. mobile drawer all pass. No Phase 1 / Issues 1-6 regressions.
+
 ## Next Tasks
-- Await user feedback; optional: Manager team-workload matrix, delayed-projects report.
+- Await user feedback.
