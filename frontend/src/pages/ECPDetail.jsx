@@ -1,0 +1,220 @@
+import React, { useEffect, useState } from "react";
+import { useParams, useNavigate } from "react-router-dom";
+import api, { apiError } from "@/lib/api";
+import { useAuth } from "@/context/AuthContext";
+import { PageHeader } from "@/components/ui-bits";
+import { StatusBadge, DelayedBadge } from "@/components/StatusBadge";
+import { STAGE_ORDER, STAGE_LABELS, DERIVED_LABELS } from "@/lib/constants";
+import { Card } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { CheckCircle2, Circle, Truck, Wrench, Ban, Coins } from "lucide-react";
+import { toast } from "sonner";
+
+const CLOSURE_REASONS = ["CUSTOMER_CANCELLED", "DUPLICATE", "NOT_FEASIBLE", "OTHER"];
+const STAGE_TEAM = { REGISTRATION_1: "REGISTRATION", ACCOUNTS_1: "ACCOUNTS", DISPATCH: "DISPATCH", INSTALLATION: "INSTALLATION", NET_METERING: "INSTALLATION", REGISTRATION_2: "REGISTRATION", ACCOUNTS_2: "ACCOUNTS" };
+
+export default function ECPDetail() {
+  const { id } = useParams();
+  const nav = useNavigate();
+  const { user } = useAuth();
+  const [data, setData] = useState(null);
+  const [closeDlg, setCloseDlg] = useState(false);
+  const [cf, setCf] = useState({});
+
+  const load = () => api.get(`/ecps/${id}`).then((r) => setData(r.data));
+  useEffect(() => { load(); }, [id]);
+  if (!data) return <div className="p-8 text-slate-500">Loading…</div>;
+
+  const { ecp, tasks, history, payments } = data;
+  const stage = ecp.current_stage;
+  const isStageTeam = user.role === STAGE_TEAM[stage] || user.role === "OWNER";
+  const stageTasks = tasks.filter((t) => t.stage === stage && t.applicable);
+  const active = ecp.status === "ACTIVE";
+
+  const completeTask = async (taskId) => {
+    try { await api.post(`/ecps/${id}/tasks/${taskId}/complete`); toast.success("Task completed"); load(); }
+    catch (e) { toast.error(apiError(e.response?.data?.detail)); }
+  };
+  const startDispatch = async () => {
+    try { await api.post(`/ecps/${id}/start-dispatch`); toast.success("Dispatch started"); load(); }
+    catch (e) { toast.error(apiError(e.response?.data?.detail)); }
+  };
+  const installAction = async (action) => {
+    try { await api.post(`/ecps/${id}/installation`, { action }); toast.success("Updated"); load(); }
+    catch (e) { toast.error(apiError(e.response?.data?.detail)); }
+  };
+  const toggleFinancing = async (val) => {
+    try { await api.post(`/ecps/${id}/financing`, { financing_required: val }); toast.success("Financing updated"); load(); }
+    catch (e) { toast.error(apiError(e.response?.data?.detail)); }
+  };
+  const closeEcp = async () => {
+    try { await api.post(`/ecps/${id}/close`, { reason: cf.reason, remarks: cf.remarks }); toast.success("ECP closed"); setCloseDlg(false); load(); }
+    catch (e) { toast.error(apiError(e.response?.data?.detail)); }
+  };
+
+  const canFinancing = ["LEAD", "MANAGER", "OWNER"].includes(user.role);
+  const canClose = ["OWNER", "MANAGER"].includes(user.role) && active;
+  const stageIdx = STAGE_ORDER.indexOf(stage);
+
+  return (
+    <div>
+      <PageHeader title={ecp.lead_name} subtitle={ecp.customer_phone}
+        right={<Button variant="secondary" onClick={() => nav("/ecps")}>Back</Button>} />
+      <div className="p-6 lg:p-8 space-y-6">
+        {/* highlight */}
+        <Card className="p-5">
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-4">
+            <Info label="Current Stage"><StatusBadge value={stage} /></Info>
+            <Info label="Display Status"><span className="font-semibold">{ecp.display_status}</span>{ecp.derived_status && <div className="mt-1"><StatusBadge value={ecp.derived_status} label={DERIVED_LABELS[ecp.derived_status]} /></div>}</Info>
+            <Info label="Current Team">{ecp.current_team || "—"}</Info>
+            <Info label="Days in Stage">{ecp.days_in_stage ?? "—"} {ecp.delayed && <DelayedBadge />}</Info>
+            <Info label="Financing">{ecp.financing_required ? "Required" : "Not required"}</Info>
+          </div>
+          {ecp.status === "COMPLETED" && (
+            <div className="mt-4 space-x-2">
+              {!ecp.first_payment_confirmed && <span className="text-xs font-semibold text-rose-600">FIRST PAYMENT NOT RECEIVED</span>}
+              {!ecp.final_payment_confirmed && <span className="text-xs font-semibold text-amber-600">FINAL PAYMENT PENDING</span>}
+            </div>
+          )}
+          {ecp.status === "CLOSED" && (
+            <div className="mt-4 text-sm bg-slate-50 border rounded-md px-3 py-2 text-slate-700">
+              Closed/Cancelled · reason: <b>{ecp.closure_reason}</b>{ecp.closure_remarks ? ` — ${ecp.closure_remarks}` : ""} · by {ecp.closed_by_name}
+            </div>
+          )}
+        </Card>
+
+        {/* stepper */}
+        <Card className="p-5">
+          <div className="flex flex-wrap gap-2">
+            {STAGE_ORDER.map((s, i) => {
+              const done = ecp.status === "COMPLETED" ? true : i < stageIdx;
+              const cur = i === stageIdx && active;
+              return (
+                <div key={s} data-testid={`ecp-stage-node-${i}`} className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-sm ${
+                  cur ? "bg-sky-600 text-white border-sky-600" : done ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-slate-50 text-slate-400 border-slate-200"
+                }`}>
+                  {done ? <CheckCircle2 size={15} /> : <Circle size={15} />} {STAGE_LABELS[s]}
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+
+        <div className="grid lg:grid-cols-3 gap-6">
+          <div className="lg:col-span-2 space-y-6">
+            {/* stage work */}
+            {active && (
+              <Card className="p-5">
+                <h3 className="font-head font-semibold mb-3">{STAGE_LABELS[stage]} — Stage Work</h3>
+
+                {stage === "DISPATCH" && !ecp.dispatch_started && (
+                  <div className="mb-4 p-3 rounded-md border bg-slate-50">
+                    {ecp.first_payment_confirmed ? (
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm text-teal-700 font-semibold">Ready for Dispatch — First Payment confirmed</span>
+                        {isStageTeam && <Button data-testid="start-dispatch-button" onClick={startDispatch} className="bg-sky-600 hover:bg-sky-700"><Truck size={16} className="mr-1.5" /> Start Dispatch</Button>}
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2 text-rose-700 text-sm font-semibold"><Ban size={16} /> Payment Blocked — First Payment must be CONFIRMED by Accounts before dispatch can start.</div>
+                    )}
+                  </div>
+                )}
+
+                {stage === "INSTALLATION" ? (
+                  <div className="space-y-3">
+                    <div className="text-sm">Installation status: <StatusBadge value={ecp.install_status} label={DERIVED_LABELS[ecp.install_status]} /></div>
+                    {isStageTeam && ecp.install_status === "READY_TO_INSTALL" && <Button data-testid="install-start-button" onClick={() => installAction("start")} className="bg-sky-600 hover:bg-sky-700"><Wrench size={16} className="mr-1.5" /> Start Installation</Button>}
+                    {isStageTeam && ecp.install_status === "IN_PROCESS" && <Button data-testid="install-complete-button" onClick={() => installAction("complete")} className="bg-emerald-600 hover:bg-emerald-700"><CheckCircle2 size={16} className="mr-1.5" /> Complete Installation</Button>}
+                  </div>
+                ) : (
+                  <ul className="space-y-2">
+                    {stageTasks.length === 0 && <li className="text-sm text-slate-400">No tasks for this stage.</li>}
+                    {stageTasks.map((t) => (
+                      <li key={t.id} data-testid={`task-${t.id}`} className="flex items-center justify-between border rounded-md px-3 py-2">
+                        <span className={`text-sm ${t.completed ? "text-emerald-700 line-through" : "text-slate-800"}`}>{t.task_name}</span>
+                        {t.completed ? <span className="text-xs text-emerald-600 font-semibold">Done · {t.completed_by_name}</span> :
+                          isStageTeam && <Button size="sm" data-testid={`complete-task-${t.id}`} onClick={() => completeTask(t.id)} disabled={stage === "DISPATCH" && !ecp.dispatch_started}>Mark Done</Button>}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {!isStageTeam && <p className="text-xs text-slate-400 mt-3">Read-only — this stage is owned by {ecp.current_team}.</p>}
+              </Card>
+            )}
+
+            {/* financing */}
+            {canFinancing && active && (
+              <Card className="p-5 flex items-center justify-between">
+                <div>
+                  <h3 className="font-head font-semibold">Financing</h3>
+                  <p className="text-sm text-slate-500">Toggling changes financing tasks without regressing stage.</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Checkbox id="ecpfin" data-testid="ecp-financing-toggle" checked={ecp.financing_required} onCheckedChange={(v) => toggleFinancing(!!v)} />
+                  <Label htmlFor="ecpfin">Financing Required</Label>
+                </div>
+              </Card>
+            )}
+
+            {/* payments summary */}
+            <Card className="p-5">
+              <h3 className="font-head font-semibold mb-3 flex items-center gap-2"><Coins size={17} /> Payments</h3>
+              <ul className="space-y-2">
+                {payments.length === 0 && <li className="text-sm text-slate-400">No payments recorded.</li>}
+                {payments.map((p) => (
+                  <li key={p.id} className="flex items-center justify-between text-sm border-b pb-1">
+                    <span><b>{p.type}</b> · ₹{p.amount} · {p.date?.slice(0, 10)}</span>
+                    <StatusBadge value={p.status} kind={p.status === "CONFIRMED" ? "CONFIRMED" : "PENDING"} label={p.status} />
+                  </li>
+                ))}
+              </ul>
+              {user.role === "ACCOUNTS" && <Button variant="outline" className="mt-3" onClick={() => nav("/payments")}>Manage Payments</Button>}
+            </Card>
+
+            {canClose && (
+              <Button data-testid="ecp-close-button" variant="destructive" onClick={() => setCloseDlg(true)}>Close / Cancel Project</Button>
+            )}
+          </div>
+
+          {/* history */}
+          <Card className="p-5">
+            <h3 className="font-head font-semibold mb-3">Workflow History</h3>
+            <ul className="space-y-3">
+              {history.map((h) => (
+                <li key={h.id} className="text-sm border-l-2 border-sky-200 pl-3">
+                  <div className="font-medium">{h.from_stage ? `${STAGE_LABELS[h.from_stage] || h.from_stage} → ` : ""}{STAGE_LABELS[h.to_stage] || h.to_stage}</div>
+                  <div className="text-xs text-slate-500">{h.note} · {h.changed_by_name} · {h.changed_at?.slice(0, 16).replace("T", " ")}</div>
+                </li>
+              ))}
+            </ul>
+          </Card>
+        </div>
+      </div>
+
+      <Dialog open={closeDlg} onOpenChange={setCloseDlg}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Close / Cancel ECP</DialogTitle></DialogHeader>
+          <div className="space-y-3">
+            <div><Label>Reason *</Label>
+              <Select value={cf.reason} onValueChange={(v) => setCf({ ...cf, reason: v })}>
+                <SelectTrigger data-testid="closure-reason-select"><SelectValue placeholder="Select reason" /></SelectTrigger>
+                <SelectContent>{CLOSURE_REASONS.map((r) => <SelectItem key={r} value={r}>{r}</SelectItem>)}</SelectContent>
+              </Select>
+            </div>
+            <div><Label>Remarks {cf.reason === "OTHER" && "*"}</Label><Textarea data-testid="closure-remarks-input" value={cf.remarks || ""} onChange={(e) => setCf({ ...cf, remarks: e.target.value })} /></div>
+          </div>
+          <DialogFooter><Button data-testid="closure-submit" variant="destructive" onClick={closeEcp}>Confirm Close</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+function Info({ label, children }) {
+  return <div><div className="text-xs font-mono uppercase tracking-wider text-slate-500">{label}</div><div className="mt-1 font-medium text-slate-900">{children}</div></div>;
+}

@@ -1,89 +1,1048 @@
-from fastapi import FastAPI, APIRouter
 from dotenv import load_dotenv
-from starlette.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
-import os
-import logging
 from pathlib import Path
-from pydantic import BaseModel, Field, ConfigDict
-from typing import List
-import uuid
-from datetime import datetime, timezone
-
 
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
+load_dotenv(ROOT_DIR / ".env")
 
-# MongoDB connection
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+import os
+import uuid
+import logging
+from datetime import datetime, timezone, timedelta
 
-# Create the main app without a prefix
+from fastapi import FastAPI, APIRouter, HTTPException, Request, Depends
+from starlette.middleware.cors import CORSMiddleware
+from motor.motor_asyncio import AsyncIOMotorClient
+from pydantic import BaseModel, Field
+from typing import Optional, List
+
+from auth import (
+    hash_password, verify_password, create_access_token, decode_token, extract_token,
+)
+import workflow as wf
+
+# ---- DB ----
+client = AsyncIOMotorClient(os.environ["MONGO_URL"])
+db = client[os.environ["DB_NAME"]]
+
 app = FastAPI()
+api = APIRouter(prefix="/api")
+logger = logging.getLogger("ecp")
+logging.basicConfig(level=logging.INFO)
 
-# Create a router with the /api prefix
-api_router = APIRouter(prefix="/api")
+NO_ID = {"_id": 0}
 
 
-# Define Models
-class StatusCheck(BaseModel):
-    model_config = ConfigDict(extra="ignore")  # Ignore MongoDB's _id field
-    
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    client_name: str
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+def now_iso():
+    return datetime.now(timezone.utc).isoformat()
 
-class StatusCheckCreate(BaseModel):
-    client_name: str
 
-# Add your routes to the router instead of directly to app
-@api_router.get("/")
-async def root():
-    return {"message": "Hello World"}
+def new_id():
+    return str(uuid.uuid4())
 
-@api_router.post("/status", response_model=StatusCheck)
-async def create_status_check(input: StatusCheckCreate):
-    status_dict = input.model_dump()
-    status_obj = StatusCheck(**status_dict)
-    
-    # Convert to dict and serialize datetime to ISO string for MongoDB
-    doc = status_obj.model_dump()
-    doc['timestamp'] = doc['timestamp'].isoformat()
-    
-    _ = await db.status_checks.insert_one(doc)
-    return status_obj
 
-@api_router.get("/status", response_model=List[StatusCheck])
-async def get_status_checks():
-    # Exclude MongoDB's _id field from the query results
-    status_checks = await db.status_checks.find({}, {"_id": 0}).to_list(1000)
-    
-    # Convert ISO string timestamps back to datetime objects
-    for check in status_checks:
-        if isinstance(check['timestamp'], str):
-            check['timestamp'] = datetime.fromisoformat(check['timestamp'])
-    
-    return status_checks
+# ========================= AUTH =========================
+async def get_current_user(request: Request) -> dict:
+    token = extract_token(request)
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    try:
+        payload = decode_token(token)
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    user = await db.users.find_one({"id": payload.get("sub")}, NO_ID)
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+    if not user.get("active", True):
+        raise HTTPException(status_code=403, detail="Account is deactivated")
+    user.pop("password_hash", None)
+    return user
 
-# Include the router in the main app
-app.include_router(api_router)
+
+def require(user: dict, *roles):
+    if user["role"] not in roles:
+        raise HTTPException(status_code=403, detail="You do not have permission for this action")
+
+
+class LoginBody(BaseModel):
+    username: str
+    password: str
+
+
+@api.post("/auth/login")
+async def login(body: LoginBody):
+    user = await db.users.find_one({"username": body.username.strip().lower()})
+    if not user or not verify_password(body.password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+    if not user.get("active", True):
+        raise HTTPException(status_code=403, detail="Account is deactivated")
+    token = create_access_token(user["id"], user["username"])
+    user.pop("password_hash", None)
+    user.pop("_id", None)
+    return {"token": token, "user": user}
+
+
+@api.get("/auth/me")
+async def me(user: dict = Depends(get_current_user)):
+    return user
+
+
+# ========================= USERS (Owner only) =========================
+class UserCreate(BaseModel):
+    username: str
+    password: str
+    name: str
+    role: str
+    team: Optional[str] = None
+
+
+class UserUpdate(BaseModel):
+    name: Optional[str] = None
+    role: Optional[str] = None
+    team: Optional[str] = None
+    active: Optional[bool] = None
+    password: Optional[str] = None
+
+
+def public_user(u: dict):
+    u.pop("password_hash", None)
+    u.pop("_id", None)
+    return u
+
+
+@api.get("/users")
+async def list_users(user: dict = Depends(get_current_user)):
+    require(user, "OWNER")
+    users = await db.users.find({}, NO_ID).to_list(1000)
+    for u in users:
+        u.pop("password_hash", None)
+    return users
+
+
+@api.post("/users")
+async def create_user(body: UserCreate, user: dict = Depends(get_current_user)):
+    require(user, "OWNER")
+    if body.role not in wf.ROLES:
+        raise HTTPException(status_code=400, detail="Invalid role")
+    username = body.username.strip().lower()
+    if await db.users.find_one({"username": username}):
+        raise HTTPException(status_code=400, detail="Username already exists")
+    doc = {
+        "id": new_id(),
+        "username": username,
+        "password_hash": hash_password(body.password),
+        "name": body.name.strip(),
+        "role": body.role,
+        "team": body.role,  # one user = one role = one team
+        "active": True,
+        "created_at": now_iso(),
+    }
+    await db.users.insert_one(doc)
+    return public_user(dict(doc))
+
+
+@api.patch("/users/{user_id}")
+async def update_user(user_id: str, body: UserUpdate, user: dict = Depends(get_current_user)):
+    require(user, "OWNER")
+    target = await db.users.find_one({"id": user_id})
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    upd = {}
+    if body.name is not None:
+        upd["name"] = body.name.strip()
+    if body.role is not None:
+        if body.role not in wf.ROLES:
+            raise HTTPException(status_code=400, detail="Invalid role")
+        upd["role"] = body.role
+        upd["team"] = body.role
+    if body.active is not None:
+        upd["active"] = body.active
+    if body.password:
+        upd["password_hash"] = hash_password(body.password)
+    if upd:
+        await db.users.update_one({"id": user_id}, {"$set": upd})
+    fresh = await db.users.find_one({"id": user_id}, NO_ID)
+    fresh.pop("password_hash", None)
+    return fresh
+
+
+# ========================= SLA CONFIG (Owner only to edit) =========================
+class SLABody(BaseModel):
+    config: dict  # {stage: days}
+
+
+@api.get("/sla")
+async def get_sla(user: dict = Depends(get_current_user)):
+    docs = await db.stage_sla_config.find({}, NO_ID).to_list(100)
+    cfg = {d["stage"]: d["sla_days"] for d in docs}
+    for s in wf.STAGE_ORDER:
+        cfg.setdefault(s, 0)
+    return cfg
+
+
+@api.put("/sla")
+async def set_sla(body: SLABody, user: dict = Depends(get_current_user)):
+    require(user, "OWNER")
+    for stage, days in body.config.items():
+        if stage not in wf.STAGE_ORDER:
+            continue
+        await db.stage_sla_config.update_one(
+            {"stage": stage}, {"$set": {"stage": stage, "sla_days": int(days)}}, upsert=True
+        )
+    return await get_sla(user)
+
+
+async def get_sla_map():
+    docs = await db.stage_sla_config.find({}, NO_ID).to_list(100)
+    return {d["stage"]: d["sla_days"] for d in docs}
+
+
+# ========================= LEADS =========================
+class LeadCreate(BaseModel):
+    name: str
+    phone: str
+    email: Optional[str] = ""
+    address: Optional[str] = ""
+    source: Optional[str] = ""
+    financing_required: bool = False
+    remarks: Optional[str] = ""
+
+
+class LeadAction(BaseModel):
+    action: str
+    lost_reason: Optional[str] = None
+    lost_remarks: Optional[str] = None
+    followup_date: Optional[str] = None
+    remarks: Optional[str] = None
+    reason: Optional[str] = None
+
+
+def lead_visible_roles():
+    return ["OWNER", "MANAGER", "LEAD"]
+
+
+@api.get("/leads")
+async def list_leads(status: Optional[str] = None, user: dict = Depends(get_current_user)):
+    if user["role"] not in lead_visible_roles():
+        # other teams get read-only limited visibility (qualified leads linked to ECPs they see)
+        return []
+    q = {}
+    if status:
+        q["status"] = status
+    leads = await db.leads.find(q, NO_ID).sort("created_at", -1).to_list(2000)
+    return leads
+
+
+@api.post("/leads")
+async def create_lead(body: LeadCreate, user: dict = Depends(get_current_user)):
+    require(user, "LEAD", "OWNER")
+    doc = {
+        "id": new_id(),
+        "name": body.name.strip(),
+        "phone": body.phone.strip(),
+        "email": (body.email or "").strip(),
+        "address": (body.address or "").strip(),
+        "source": (body.source or "").strip(),
+        "remarks": (body.remarks or "").strip(),
+        "status": "PENDING",
+        "current_team": "LEAD",
+        "action_required": True,
+        "return_reason": None,
+        "financing_required": bool(body.financing_required),
+        "lost_reason": None,
+        "lost_remarks": None,
+        "ecp_id": None,
+        "created_by": user["id"],
+        "created_by_name": user["name"],
+        "created_at": now_iso(),
+        "updated_at": now_iso(),
+    }
+    await db.leads.insert_one(doc)
+    d = dict(doc)
+    d.pop("_id", None)
+    return d
+
+
+async def _lead_bundle(lead_id: str):
+    lead = await db.leads.find_one({"id": lead_id}, NO_ID)
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    followups = await db.lead_followups.find({"lead_id": lead_id}, NO_ID).sort("created_at", -1).to_list(500)
+    site_visits = await db.lead_site_visits.find({"lead_id": lead_id}, NO_ID).sort("created_at", -1).to_list(500)
+    escalations = await db.lead_escalations.find({"lead_id": lead_id}, NO_ID).sort("created_at", -1).to_list(500)
+    ecp = None
+    if lead.get("ecp_id"):
+        ecp = await db.ecps.find_one({"id": lead["ecp_id"]}, NO_ID)
+    return {"lead": lead, "followups": followups, "site_visits": site_visits,
+            "escalations": escalations, "ecp": ecp}
+
+
+@api.get("/leads/{lead_id}")
+async def get_lead(lead_id: str, user: dict = Depends(get_current_user)):
+    return await _lead_bundle(lead_id)
+
+
+async def create_ecp_from_lead(lead: dict, user: dict):
+    financing = bool(lead.get("financing_required"))
+    ecp_id = new_id()
+    ecp = {
+        "id": ecp_id,
+        "lead_id": lead["id"],
+        "lead_name": lead["name"],
+        "customer_phone": lead.get("phone", ""),
+        "current_stage": "REGISTRATION_1",
+        "current_team": wf.STAGE_TEAM["REGISTRATION_1"],
+        "responsible_user": None,
+        "responsible_user_name": None,
+        "financing_required": financing,
+        "status": "ACTIVE",
+        "dispatch_started": False,
+        "install_status": None,
+        "stage_entry_date": now_iso(),
+        "closed_at": None,
+        "closed_by": None,
+        "closure_reason": None,
+        "closure_remarks": None,
+        "created_at": now_iso(),
+        "updated_at": now_iso(),
+    }
+    await db.ecps.insert_one(ecp)
+    # tasks for registration 1
+    tasks = list(wf.REG1_BASE_TASKS)
+    task_docs = []
+    for t in tasks:
+        task_docs.append(_make_task(ecp_id, "REGISTRATION_1", t, True))
+    for t in wf.REG1_FINANCING_TASKS:
+        task_docs.append(_make_task(ecp_id, "REGISTRATION_1", t, financing))
+    if task_docs:
+        await db.ecp_tasks.insert_many(task_docs)
+    await db.ecp_stage_history.insert_one({
+        "id": new_id(), "ecp_id": ecp_id, "from_stage": None, "to_stage": "REGISTRATION_1",
+        "changed_by": user["id"], "changed_by_name": user["name"], "changed_at": now_iso(),
+        "note": "ECP created from qualified lead",
+    })
+    return ecp_id
+
+
+def _make_task(ecp_id, stage, name, applicable):
+    return {
+        "id": new_id(), "ecp_id": ecp_id, "stage": stage, "task_name": name,
+        "applicable": applicable, "completed": False, "completed_by": None,
+        "completed_by_name": None, "completed_at": None,
+    }
+
+
+@api.post("/leads/{lead_id}/action")
+async def lead_action(lead_id: str, body: LeadAction, user: dict = Depends(get_current_user)):
+    require(user, "LEAD")  # Only Lead Team decides the 5 actions (Phase 1 spec D)
+    lead = await db.leads.find_one({"id": lead_id}, NO_ID)
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    if lead["status"] in ("QUALIFIED", "LOST") and not lead.get("action_required"):
+        raise HTTPException(status_code=400, detail="Lead is not currently actionable")
+    action = body.action
+    if action not in wf.LEAD_ACTIONS:
+        raise HTTPException(status_code=400, detail="Invalid action")
+
+    if action == "YES":
+        if lead.get("ecp_id"):
+            raise HTTPException(status_code=400, detail="Lead already has an ECP")
+        ecp_id = await create_ecp_from_lead(lead, user)
+        await db.leads.update_one({"id": lead_id}, {"$set": {
+            "status": "QUALIFIED", "action_required": False, "current_team": None,
+            "return_reason": None, "ecp_id": ecp_id, "updated_at": now_iso()}})
+
+    elif action == "NO":
+        if not body.lost_reason:
+            raise HTTPException(status_code=400, detail="Lost reason is required")
+        if body.lost_reason == "OTHER" and not (body.lost_remarks or "").strip():
+            raise HTTPException(status_code=400, detail="Remarks are mandatory when reason is OTHER")
+        await db.leads.update_one({"id": lead_id}, {"$set": {
+            "status": "LOST", "action_required": False, "current_team": None,
+            "lost_reason": body.lost_reason, "lost_remarks": (body.lost_remarks or "").strip(),
+            "updated_at": now_iso()}})
+
+    elif action == "FOLLOW_UP":
+        if not body.followup_date:
+            raise HTTPException(status_code=400, detail="Follow-up date is required")
+        if not (body.remarks or "").strip():
+            raise HTTPException(status_code=400, detail="Remarks are required")
+        try:
+            fdate = datetime.fromisoformat(body.followup_date).date()
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid follow-up date")
+        if fdate < datetime.now(timezone.utc).date():
+            raise HTTPException(status_code=400, detail="Follow-up date cannot be in the past")
+        await db.lead_followups.insert_one({
+            "id": new_id(), "lead_id": lead_id, "followup_date": body.followup_date,
+            "remarks": body.remarks.strip(), "created_by": user["id"],
+            "created_by_name": user["name"], "created_at": now_iso()})
+        await db.leads.update_one({"id": lead_id}, {"$set": {
+            "status": "FOLLOW_UP", "action_required": True, "current_team": "LEAD",
+            "return_reason": None, "updated_at": now_iso()}})
+
+    elif action == "SITE_VISIT":
+        open_sv = await db.lead_site_visits.find_one(
+            {"lead_id": lead_id, "status": {"$in": ["REQUESTED", "ASSIGNED"]}})
+        if open_sv:
+            raise HTTPException(status_code=400, detail="An open site visit already exists for this lead")
+        await db.lead_site_visits.insert_one({
+            "id": new_id(), "lead_id": lead_id, "lead_name": lead["name"],
+            "status": "REQUESTED", "assigned_user": None, "assigned_user_name": None,
+            "visit_date": None, "survey_info": None, "requested_remarks": (body.remarks or "").strip(),
+            "requested_by": user["id"], "requested_by_name": user["name"],
+            "assigned_by": None, "created_at": now_iso(), "completed_at": None})
+        await db.leads.update_one({"id": lead_id}, {"$set": {
+            "status": "SITE_VISIT", "action_required": False,
+            "current_team": "INSTALLATION", "return_reason": None, "updated_at": now_iso()}})
+
+    elif action == "ESCALATION":
+        if not (body.reason or "").strip():
+            raise HTTPException(status_code=400, detail="Escalation reason is required")
+        if not (body.remarks or "").strip():
+            raise HTTPException(status_code=400, detail="Escalation remarks are required")
+        await db.lead_escalations.insert_one({
+            "id": new_id(), "lead_id": lead_id, "lead_name": lead["name"],
+            "reason": body.reason.strip(), "remarks": body.remarks.strip(),
+            "owner_remarks": None, "status": "OPEN", "created_by": user["id"],
+            "created_by_name": user["name"], "created_at": now_iso(), "returned_at": None})
+        await db.leads.update_one({"id": lead_id}, {"$set": {
+            "status": "ESCALATED", "action_required": False, "current_team": "OWNER",
+            "return_reason": None, "updated_at": now_iso()}})
+
+    return await _lead_bundle(lead_id)
+
+
+@api.post("/leads/{lead_id}/reopen")
+async def reopen_lead(lead_id: str, user: dict = Depends(get_current_user)):
+    require(user, "OWNER")
+    lead = await db.leads.find_one({"id": lead_id}, NO_ID)
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    if lead["status"] != "LOST":
+        raise HTTPException(status_code=400, detail="Only LOST leads can be reopened")
+    await db.leads.update_one({"id": lead_id}, {"$set": {
+        "status": "PENDING", "action_required": True, "current_team": "LEAD",
+        "return_reason": "REOPENED", "lost_reason": None, "lost_remarks": None,
+        "updated_at": now_iso()}})
+    return await _lead_bundle(lead_id)
+
+
+class FinancingBody(BaseModel):
+    financing_required: bool
+
+
+@api.post("/leads/{lead_id}/financing")
+async def lead_financing(lead_id: str, body: FinancingBody, user: dict = Depends(get_current_user)):
+    require(user, "LEAD", "MANAGER", "OWNER")
+    lead = await db.leads.find_one({"id": lead_id}, NO_ID)
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    await db.leads.update_one({"id": lead_id}, {"$set": {
+        "financing_required": bool(body.financing_required), "updated_at": now_iso()}})
+    if lead.get("ecp_id"):
+        await _apply_ecp_financing(lead["ecp_id"], bool(body.financing_required), user)
+    return await _lead_bundle(lead_id)
+
+
+# ========================= SITE VISITS =========================
+@api.get("/site-visits")
+async def list_site_visits(user: dict = Depends(get_current_user)):
+    if user["role"] in ("OWNER", "MANAGER"):
+        visits = await db.lead_site_visits.find({}, NO_ID).sort("created_at", -1).to_list(2000)
+    elif user["role"] == "INSTALLATION":
+        visits = await db.lead_site_visits.find(
+            {"assigned_user": user["id"]}, NO_ID).sort("created_at", -1).to_list(2000)
+    else:
+        visits = []
+    return visits
+
+
+class AssignSiteVisit(BaseModel):
+    assigned_user: str
+    visit_date: str
+
+
+@api.post("/site-visits/{sv_id}/assign")
+async def assign_site_visit(sv_id: str, body: AssignSiteVisit, user: dict = Depends(get_current_user)):
+    require(user, "MANAGER", "OWNER")
+    sv = await db.lead_site_visits.find_one({"id": sv_id}, NO_ID)
+    if not sv:
+        raise HTTPException(status_code=404, detail="Site visit not found")
+    if sv["status"] not in ("REQUESTED", "ASSIGNED"):
+        raise HTTPException(status_code=400, detail="Site visit is not open")
+    emp = await db.users.find_one({"id": body.assigned_user}, NO_ID)
+    if not emp or emp["role"] != "INSTALLATION":
+        raise HTTPException(status_code=400, detail="Assignee must be an Installation team member")
+    await db.lead_site_visits.update_one({"id": sv_id}, {"$set": {
+        "status": "ASSIGNED", "assigned_user": body.assigned_user,
+        "assigned_user_name": emp["name"], "visit_date": body.visit_date,
+        "assigned_by": user["id"], "assigned_by_name": user["name"]}})
+    return await db.lead_site_visits.find_one({"id": sv_id}, NO_ID)
+
+
+class CompleteSiteVisit(BaseModel):
+    survey_info: str
+
+
+@api.post("/site-visits/{sv_id}/complete")
+async def complete_site_visit(sv_id: str, body: CompleteSiteVisit, user: dict = Depends(get_current_user)):
+    require(user, "INSTALLATION", "OWNER")
+    sv = await db.lead_site_visits.find_one({"id": sv_id}, NO_ID)
+    if not sv:
+        raise HTTPException(status_code=404, detail="Site visit not found")
+    if sv["status"] != "ASSIGNED":
+        raise HTTPException(status_code=400, detail="Only assigned site visits can be completed")
+    if user["role"] == "INSTALLATION" and sv["assigned_user"] != user["id"]:
+        raise HTTPException(status_code=403, detail="This site visit is not assigned to you")
+    if not (body.survey_info or "").strip():
+        raise HTTPException(status_code=400, detail="Survey information is required")
+    await db.lead_site_visits.update_one({"id": sv_id}, {"$set": {
+        "status": "DONE", "survey_info": body.survey_info.strip(), "completed_at": now_iso()}})
+    # lead returns to Lead Team, action required
+    await db.leads.update_one({"id": sv["lead_id"]}, {"$set": {
+        "status": "PENDING", "action_required": True, "current_team": "LEAD",
+        "return_reason": "SITE_VISIT_COMPLETED", "updated_at": now_iso()}})
+    return await db.lead_site_visits.find_one({"id": sv_id}, NO_ID)
+
+
+# ========================= ESCALATIONS =========================
+@api.get("/escalations")
+async def list_escalations(user: dict = Depends(get_current_user)):
+    require(user, "OWNER")
+    return await db.lead_escalations.find({}, NO_ID).sort("created_at", -1).to_list(2000)
+
+
+class ReturnEscalation(BaseModel):
+    owner_remarks: str
+
+
+@api.post("/escalations/{esc_id}/return")
+async def return_escalation(esc_id: str, body: ReturnEscalation, user: dict = Depends(get_current_user)):
+    require(user, "OWNER")
+    esc = await db.lead_escalations.find_one({"id": esc_id}, NO_ID)
+    if not esc:
+        raise HTTPException(status_code=404, detail="Escalation not found")
+    if esc["status"] != "OPEN":
+        raise HTTPException(status_code=400, detail="Escalation already handled")
+    if not (body.owner_remarks or "").strip():
+        raise HTTPException(status_code=400, detail="Owner remarks are mandatory")
+    await db.lead_escalations.update_one({"id": esc_id}, {"$set": {
+        "status": "RETURNED", "owner_remarks": body.owner_remarks.strip(), "returned_at": now_iso()}})
+    await db.leads.update_one({"id": esc["lead_id"]}, {"$set": {
+        "status": "PENDING", "action_required": True, "current_team": "LEAD",
+        "return_reason": "OWNER_RETURNED", "updated_at": now_iso()}})
+    return await db.lead_escalations.find_one({"id": esc_id}, NO_ID)
+
+
+# ========================= ECP =========================
+async def first_payment_confirmed(ecp_id: str) -> bool:
+    p = await db.payments.find_one({"ecp_id": ecp_id, "type": "FIRST", "status": "CONFIRMED"})
+    return p is not None
+
+
+async def final_payment_confirmed(ecp_id: str) -> bool:
+    p = await db.payments.find_one({"ecp_id": ecp_id, "type": "FINAL", "status": "CONFIRMED"})
+    return p is not None
+
+
+async def enrich_ecp(ecp: dict, sla_map: dict = None):
+    if sla_map is None:
+        sla_map = await get_sla_map()
+    stage = ecp["current_stage"]
+    display = wf.STAGE_LABELS.get(stage, stage)
+    derived = None
+    if ecp["status"] == "CLOSED":
+        display = "Closed / Cancelled"
+    elif ecp["status"] == "COMPLETED":
+        display = "Successfully Completed"
+    elif stage == "DISPATCH":
+        if not ecp.get("dispatch_started"):
+            fp = await first_payment_confirmed(ecp["id"])
+            derived = "READY_FOR_DISPATCH" if fp else "PAYMENT_BLOCKED"
+        else:
+            derived = "DISPATCH_IN_PROCESS"
+    elif stage == "INSTALLATION":
+        derived = ecp.get("install_status") or "READY_TO_INSTALL"
+    # delayed
+    delayed = False
+    days_in_stage = None
+    if ecp["status"] == "ACTIVE" and ecp.get("stage_entry_date"):
+        sla_days = sla_map.get(stage, 0)
+        entry = datetime.fromisoformat(ecp["stage_entry_date"])
+        days_in_stage = (datetime.now(timezone.utc) - entry).days
+        if sla_days and sla_days > 0:
+            due = entry + timedelta(days=sla_days)
+            if datetime.now(timezone.utc) > due:
+                delayed = True
+    ecp["stage_label"] = wf.STAGE_LABELS.get(stage, stage)
+    ecp["display_status"] = display
+    ecp["derived_status"] = derived
+    ecp["delayed"] = delayed
+    ecp["days_in_stage"] = days_in_stage
+    ecp["first_payment_confirmed"] = await first_payment_confirmed(ecp["id"])
+    ecp["final_payment_confirmed"] = await final_payment_confirmed(ecp["id"])
+    return ecp
+
+
+def ecp_filter_for_role(role: str):
+    if role in ("OWNER", "MANAGER", "LEAD", "ACCOUNTS"):
+        return {}
+    if role == "REGISTRATION":
+        return {"current_stage": {"$in": ["REGISTRATION_1", "REGISTRATION_2"]}}
+    if role == "DISPATCH":
+        return {"current_stage": "DISPATCH"}
+    if role == "INSTALLATION":
+        return {"current_stage": {"$in": ["INSTALLATION", "NET_METERING"]}}
+    return {"id": "__none__"}
+
+
+@api.get("/ecps")
+async def list_ecps(stage: Optional[str] = None, user: dict = Depends(get_current_user)):
+    q = ecp_filter_for_role(user["role"])
+    if stage:
+        q = {"current_stage": stage} if user["role"] in ("OWNER", "MANAGER", "LEAD", "ACCOUNTS") else q
+    ecps = await db.ecps.find(q, NO_ID).sort("created_at", -1).to_list(3000)
+    sla_map = await get_sla_map()
+    for e in ecps:
+        await enrich_ecp(e, sla_map)
+    return ecps
+
+
+@api.get("/ecps/{ecp_id}")
+async def get_ecp(ecp_id: str, user: dict = Depends(get_current_user)):
+    ecp = await db.ecps.find_one({"id": ecp_id}, NO_ID)
+    if not ecp:
+        raise HTTPException(status_code=404, detail="ECP not found")
+    await enrich_ecp(ecp)
+    tasks = await db.ecp_tasks.find({"ecp_id": ecp_id}, NO_ID).to_list(500)
+    history = await db.ecp_stage_history.find({"ecp_id": ecp_id}, NO_ID).sort("changed_at", 1).to_list(500)
+    payments = await db.payments.find({"ecp_id": ecp_id}, NO_ID).sort("date", -1).to_list(500)
+    return {"ecp": ecp, "tasks": tasks, "history": history, "payments": payments}
+
+
+async def _advance_stage(ecp: dict, user: dict, note: str = ""):
+    target = wf.next_stage(ecp["current_stage"])
+    from_stage = ecp["current_stage"]
+    upd = {"updated_at": now_iso()}
+    if target == "COMPLETED":
+        upd.update({"status": "COMPLETED", "current_stage": "ACCOUNTS_2",
+                    "current_team": None, "updated_at": now_iso(),
+                    "completed_at": now_iso()})
+        to_label = "COMPLETED"
+    else:
+        upd.update({"current_stage": target, "current_team": wf.STAGE_TEAM[target],
+                    "stage_entry_date": now_iso(), "responsible_user": None,
+                    "responsible_user_name": None})
+        to_label = target
+        if target == "DISPATCH":
+            upd["dispatch_started"] = False
+        if target == "INSTALLATION":
+            upd["install_status"] = "READY_TO_INSTALL"
+        # create tasks for the new stage
+        task_names = wf.STAGE_TASKS.get(target, [])
+        docs = [_make_task(ecp["id"], target, t, True) for t in task_names]
+        if docs:
+            await db.ecp_tasks.insert_many(docs)
+    await db.ecps.update_one({"id": ecp["id"]}, {"$set": upd})
+    await db.ecp_stage_history.insert_one({
+        "id": new_id(), "ecp_id": ecp["id"], "from_stage": from_stage, "to_stage": to_label,
+        "changed_by": user["id"], "changed_by_name": user["name"], "changed_at": now_iso(),
+        "note": note or "Stage advanced"})
+
+
+async def _maybe_advance(ecp_id: str, user: dict):
+    ecp = await db.ecps.find_one({"id": ecp_id}, NO_ID)
+    if not ecp or ecp["status"] != "ACTIVE":
+        return
+    stage = ecp["current_stage"]
+    tasks = await db.ecp_tasks.find({"ecp_id": ecp_id, "stage": stage, "applicable": True}, NO_ID).to_list(100)
+
+    def all_done():
+        return all(t["completed"] for t in tasks) and len(tasks) > 0
+
+    if stage in ("REGISTRATION_1", "ACCOUNTS_1", "NET_METERING", "REGISTRATION_2", "ACCOUNTS_2"):
+        if all_done():
+            await _advance_stage(ecp, user, note=f"{wf.STAGE_LABELS[stage]} tasks completed")
+    elif stage == "DISPATCH":
+        if ecp.get("dispatch_started") and all_done():
+            await _advance_stage(ecp, user, note="Dispatch completed")
+
+
+@api.post("/ecps/{ecp_id}/tasks/{task_id}/complete")
+async def complete_task(ecp_id: str, task_id: str, user: dict = Depends(get_current_user)):
+    ecp = await db.ecps.find_one({"id": ecp_id}, NO_ID)
+    if not ecp:
+        raise HTTPException(status_code=404, detail="ECP not found")
+    if ecp["status"] != "ACTIVE":
+        raise HTTPException(status_code=400, detail="ECP is not active")
+    task = await db.ecp_tasks.find_one({"id": task_id, "ecp_id": ecp_id}, NO_ID)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    stage_team = wf.STAGE_TEAM.get(task["stage"])
+    if user["role"] not in ("OWNER", stage_team):
+        raise HTTPException(status_code=403, detail="Only the responsible team can complete this task")
+    if task["stage"] != ecp["current_stage"]:
+        raise HTTPException(status_code=400, detail="Task does not belong to the current stage")
+    if not task["applicable"]:
+        raise HTTPException(status_code=400, detail="Task is not applicable")
+    if task["stage"] == "DISPATCH" and not ecp.get("dispatch_started"):
+        raise HTTPException(status_code=400, detail="Start Dispatch before completing dispatch tasks")
+    await db.ecp_tasks.update_one({"id": task_id}, {"$set": {
+        "completed": True, "completed_by": user["id"], "completed_by_name": user["name"],
+        "completed_at": now_iso()}})
+    await _maybe_advance(ecp_id, user)
+    return await get_ecp(ecp_id, user)
+
+
+@api.post("/ecps/{ecp_id}/start-dispatch")
+async def start_dispatch(ecp_id: str, user: dict = Depends(get_current_user)):
+    require(user, "DISPATCH", "OWNER")
+    ecp = await db.ecps.find_one({"id": ecp_id}, NO_ID)
+    if not ecp:
+        raise HTTPException(status_code=404, detail="ECP not found")
+    if ecp["current_stage"] != "DISPATCH":
+        raise HTTPException(status_code=400, detail="ECP is not in Dispatch stage")
+    if ecp.get("dispatch_started"):
+        raise HTTPException(status_code=400, detail="Dispatch already started")
+    if not await first_payment_confirmed(ecp_id):
+        raise HTTPException(status_code=400, detail="First Payment must be CONFIRMED before starting dispatch")
+    await db.ecps.update_one({"id": ecp_id}, {"$set": {"dispatch_started": True, "updated_at": now_iso()}})
+    await db.ecp_stage_history.insert_one({
+        "id": new_id(), "ecp_id": ecp_id, "from_stage": "DISPATCH", "to_stage": "DISPATCH",
+        "changed_by": user["id"], "changed_by_name": user["name"], "changed_at": now_iso(),
+        "note": "Dispatch started (First Payment confirmed)"})
+    return await get_ecp(ecp_id, user)
+
+
+class InstallBody(BaseModel):
+    action: str  # start | complete
+
+
+@api.post("/ecps/{ecp_id}/installation")
+async def installation_action(ecp_id: str, body: InstallBody, user: dict = Depends(get_current_user)):
+    require(user, "INSTALLATION", "OWNER")
+    ecp = await db.ecps.find_one({"id": ecp_id}, NO_ID)
+    if not ecp:
+        raise HTTPException(status_code=404, detail="ECP not found")
+    if ecp["current_stage"] != "INSTALLATION":
+        raise HTTPException(status_code=400, detail="ECP is not in Installation stage")
+    if body.action == "start":
+        if ecp.get("install_status") != "READY_TO_INSTALL":
+            raise HTTPException(status_code=400, detail="Installation is not ready to start")
+        await db.ecps.update_one({"id": ecp_id}, {"$set": {"install_status": "IN_PROCESS", "updated_at": now_iso()}})
+    elif body.action == "complete":
+        if ecp.get("install_status") != "IN_PROCESS":
+            raise HTTPException(status_code=400, detail="Installation must be in process to complete")
+        await db.ecps.update_one({"id": ecp_id}, {"$set": {"install_status": "COMPLETED", "updated_at": now_iso()}})
+        fresh = await db.ecps.find_one({"id": ecp_id}, NO_ID)
+        await _advance_stage(fresh, user, note="Installation completed")
+    else:
+        raise HTTPException(status_code=400, detail="Invalid installation action")
+    return await get_ecp(ecp_id, user)
+
+
+async def _apply_ecp_financing(ecp_id: str, financing: bool, user: dict):
+    ecp = await db.ecps.find_one({"id": ecp_id}, NO_ID)
+    if not ecp:
+        return
+    await db.ecps.update_one({"id": ecp_id}, {"$set": {"financing_required": financing, "updated_at": now_iso()}})
+    for t in wf.REG1_FINANCING_TASKS:
+        existing = await db.ecp_tasks.find_one({"ecp_id": ecp_id, "task_name": t})
+        if existing:
+            await db.ecp_tasks.update_one({"id": existing["id"]}, {"$set": {"applicable": financing}})
+        elif financing:
+            await db.ecp_tasks.insert_one(_make_task(ecp_id, "REGISTRATION_1", t, True))
+
+
+@api.post("/ecps/{ecp_id}/financing")
+async def ecp_financing(ecp_id: str, body: FinancingBody, user: dict = Depends(get_current_user)):
+    require(user, "LEAD", "MANAGER", "OWNER")
+    ecp = await db.ecps.find_one({"id": ecp_id}, NO_ID)
+    if not ecp:
+        raise HTTPException(status_code=404, detail="ECP not found")
+    await _apply_ecp_financing(ecp_id, bool(body.financing_required), user)
+    await db.leads.update_one({"id": ecp["lead_id"]}, {"$set": {
+        "financing_required": bool(body.financing_required)}})
+    return await get_ecp(ecp_id, user)
+
+
+class CloseBody(BaseModel):
+    reason: str
+    remarks: Optional[str] = None
+
+
+@api.post("/ecps/{ecp_id}/close")
+async def close_ecp(ecp_id: str, body: CloseBody, user: dict = Depends(get_current_user)):
+    require(user, "OWNER", "MANAGER")
+    ecp = await db.ecps.find_one({"id": ecp_id}, NO_ID)
+    if not ecp:
+        raise HTTPException(status_code=404, detail="ECP not found")
+    if ecp["status"] in ("CLOSED", "COMPLETED"):
+        raise HTTPException(status_code=400, detail="ECP is already closed")
+    if not body.reason:
+        raise HTTPException(status_code=400, detail="Closure reason is required")
+    if body.reason == "OTHER" and not (body.remarks or "").strip():
+        raise HTTPException(status_code=400, detail="Remarks are mandatory when reason is OTHER")
+    await db.ecps.update_one({"id": ecp_id}, {"$set": {
+        "status": "CLOSED", "current_team": None, "closed_at": now_iso(),
+        "closed_by": user["id"], "closed_by_name": user["name"],
+        "closure_reason": body.reason, "closure_remarks": (body.remarks or "").strip(),
+        "updated_at": now_iso()}})
+    await db.ecp_stage_history.insert_one({
+        "id": new_id(), "ecp_id": ecp_id, "from_stage": ecp["current_stage"], "to_stage": "CLOSED",
+        "changed_by": user["id"], "changed_by_name": user["name"], "changed_at": now_iso(),
+        "note": f"Manually closed/cancelled: {body.reason}"})
+    return await get_ecp(ecp_id, user)
+
+
+# ========================= PAYMENTS =========================
+class PaymentCreate(BaseModel):
+    ecp_id: str
+    type: str  # FIRST | ADDITIONAL | FINAL
+    amount: float
+    date: str
+    status: str  # PENDING | CONFIRMED
+    remarks: Optional[str] = ""
+
+
+class PaymentUpdate(BaseModel):
+    amount: Optional[float] = None
+    date: Optional[str] = None
+    status: Optional[str] = None
+    remarks: Optional[str] = None
+
+
+@api.post("/payments")
+async def create_payment(body: PaymentCreate, user: dict = Depends(get_current_user)):
+    require(user, "ACCOUNTS")
+    ecp = await db.ecps.find_one({"id": body.ecp_id}, NO_ID)
+    if not ecp:
+        raise HTTPException(status_code=404, detail="ECP not found")
+    if body.type not in ("FIRST", "ADDITIONAL", "FINAL"):
+        raise HTTPException(status_code=400, detail="Invalid payment type")
+    if body.status not in ("PENDING", "CONFIRMED"):
+        raise HTTPException(status_code=400, detail="Invalid payment status")
+    if body.type in ("FIRST", "FINAL"):
+        exists = await db.payments.find_one({"ecp_id": body.ecp_id, "type": body.type})
+        if exists:
+            raise HTTPException(status_code=400, detail=f"{body.type} payment already exists for this ECP")
+    doc = {
+        "id": new_id(), "ecp_id": body.ecp_id, "type": body.type, "amount": float(body.amount),
+        "date": body.date, "status": body.status, "remarks": (body.remarks or "").strip(),
+        "updated_by": user["id"], "updated_by_name": user["name"], "updated_at": now_iso(),
+        "created_at": now_iso()}
+    await db.payments.insert_one(doc)
+    d = dict(doc)
+    d.pop("_id", None)
+    return d
+
+
+@api.patch("/payments/{payment_id}")
+async def update_payment(payment_id: str, body: PaymentUpdate, user: dict = Depends(get_current_user)):
+    require(user, "ACCOUNTS")
+    pay = await db.payments.find_one({"id": payment_id}, NO_ID)
+    if not pay:
+        raise HTTPException(status_code=404, detail="Payment not found")
+    upd = {"updated_by": user["id"], "updated_by_name": user["name"], "updated_at": now_iso()}
+    if body.amount is not None:
+        upd["amount"] = float(body.amount)
+    if body.date is not None:
+        upd["date"] = body.date
+    if body.status is not None:
+        if body.status not in ("PENDING", "CONFIRMED"):
+            raise HTTPException(status_code=400, detail="Invalid status")
+        upd["status"] = body.status
+    if body.remarks is not None:
+        upd["remarks"] = body.remarks.strip()
+    await db.payments.update_one({"id": payment_id}, {"$set": upd})
+    return await db.payments.find_one({"id": payment_id}, NO_ID)
+
+
+@api.get("/payments/monitor")
+async def payment_monitor(user: dict = Depends(get_current_user)):
+    require(user, "ACCOUNTS", "OWNER", "MANAGER")
+    ecps = await db.ecps.find({}, NO_ID).sort("created_at", -1).to_list(3000)
+    payments = await db.payments.find({}, NO_ID).to_list(5000)
+    by_ecp = {}
+    for p in payments:
+        by_ecp.setdefault(p["ecp_id"], []).append(p)
+    rows = []
+    for e in ecps:
+        ps = by_ecp.get(e["id"], [])
+        rows.append({
+            "ecp_id": e["id"], "lead_name": e["lead_name"], "stage": e["current_stage"],
+            "stage_label": wf.STAGE_LABELS.get(e["current_stage"], e["current_stage"]),
+            "status": e["status"], "payments": ps})
+    return rows
+
+
+# ========================= DASHBOARD =========================
+@api.get("/dashboard")
+async def dashboard(user: dict = Depends(get_current_user)):
+    role = user["role"]
+    sla_map = await get_sla_map()
+    leads = await db.leads.find({}, NO_ID).to_list(5000)
+    ecps = await db.ecps.find({}, NO_ID).to_list(5000)
+    for e in ecps:
+        await enrich_ecp(e, sla_map)
+    payments = await db.payments.find({}, NO_ID).to_list(5000)
+
+    def lead_count(status):
+        return len([l for l in leads if l["status"] == status])
+
+    def ecp_stage_count(stage):
+        return len([e for e in ecps if e["current_stage"] == stage and e["status"] == "ACTIVE"])
+
+    def derived_count(d):
+        return len([e for e in ecps if e.get("derived_status") == d and e["status"] == "ACTIVE"])
+
+    active_ecps = [e for e in ecps if e["status"] == "ACTIVE"]
+    delayed = [e for e in active_ecps if e.get("delayed")]
+
+    def pay_count(ptype, status):
+        return len([p for p in payments if p["type"] == ptype and p["status"] == status])
+
+    today = datetime.now(timezone.utc).date().isoformat()
+
+    async def followups_today():
+        fus = await db.lead_followups.find({}, NO_ID).to_list(5000)
+        # only count for currently-in-followup leads
+        fu_lead_ids = {l["id"] for l in leads if l["status"] == "FOLLOW_UP"}
+        return len([f for f in fus if f["lead_id"] in fu_lead_ids and (f.get("followup_date") or "")[:10] == today])
+
+    site_visits = await db.lead_site_visits.find({}, NO_ID).to_list(5000)
+
+    data = {"role": role, "role_label": wf.ROLE_LABELS.get(role, role)}
+
+    if role == "OWNER":
+        data["leads"] = {
+            "PENDING": lead_count("PENDING"), "FOLLOW_UP": lead_count("FOLLOW_UP"),
+            "SITE_VISIT": lead_count("SITE_VISIT"), "ESCALATED": lead_count("ESCALATED"),
+            "QUALIFIED": lead_count("QUALIFIED"), "LOST": lead_count("LOST")}
+        data["ecp"] = {
+            "ACTIVE": len(active_ecps),
+            "REGISTRATION_1": ecp_stage_count("REGISTRATION_1"),
+            "ACCOUNTS_1": ecp_stage_count("ACCOUNTS_1"),
+            "PAYMENT_BLOCKED": derived_count("PAYMENT_BLOCKED"),
+            "READY_FOR_DISPATCH": derived_count("READY_FOR_DISPATCH"),
+            "DISPATCH_IN_PROCESS": derived_count("DISPATCH_IN_PROCESS"),
+            "READY_TO_INSTALL": derived_count("READY_TO_INSTALL"),
+            "INSTALLATION_IN_PROCESS": derived_count("IN_PROCESS"),
+            "NET_METERING": ecp_stage_count("NET_METERING"),
+            "REGISTRATION_2": ecp_stage_count("REGISTRATION_2"),
+            "ACCOUNTS_2": ecp_stage_count("ACCOUNTS_2"),
+            "DELAYED": len(delayed),
+            "COMPLETED": len([e for e in ecps if e["status"] == "COMPLETED"]),
+            "CLOSED": len([e for e in ecps if e["status"] == "CLOSED"])}
+        data["payments"] = {
+            "FIRST_PENDING": pay_count("FIRST", "PENDING"), "FIRST_CONFIRMED": pay_count("FIRST", "CONFIRMED"),
+            "FINAL_PENDING": pay_count("FINAL", "PENDING"), "FINAL_CONFIRMED": pay_count("FINAL", "CONFIRMED"),
+            "ADDITIONAL": len([p for p in payments if p["type"] == "ADDITIONAL"])}
+
+    elif role == "MANAGER":
+        data["site_visits_to_assign"] = len([s for s in site_visits if s["status"] == "REQUESTED"])
+        data["site_visits_today"] = len([s for s in site_visits if s["status"] == "ASSIGNED" and (s.get("visit_date") or "")[:10] == today])
+        data["site_visits_upcoming"] = len([s for s in site_visits if s["status"] == "ASSIGNED" and (s.get("visit_date") or "")[:10] > today])
+        data["delayed"] = len(delayed)
+        data["active_leads"] = len([l for l in leads if l["status"] in ("PENDING", "FOLLOW_UP", "SITE_VISIT", "ESCALATED")])
+        data["active_ecps"] = len(active_ecps)
+
+    elif role == "LEAD":
+        data["action_required"] = len([l for l in leads if l.get("action_required")])
+        data["followups_today"] = await followups_today()
+        data["waiting_site_visit"] = lead_count("SITE_VISIT")
+        data["escalated"] = lead_count("ESCALATED")
+        data["qualified"] = lead_count("QUALIFIED")
+        data["lost"] = lead_count("LOST")
+
+    elif role == "ACCOUNTS":
+        data["accounts_1"] = ecp_stage_count("ACCOUNTS_1")
+        data["accounts_2"] = ecp_stage_count("ACCOUNTS_2")
+        data["first_pending"] = pay_count("FIRST", "PENDING")
+        data["first_confirmed"] = pay_count("FIRST", "CONFIRMED")
+        data["final_pending"] = pay_count("FINAL", "PENDING")
+        data["final_confirmed"] = pay_count("FINAL", "CONFIRMED")
+        data["additional"] = len([p for p in payments if p["type"] == "ADDITIONAL"])
+
+    elif role == "DISPATCH":
+        data["payment_blocked"] = derived_count("PAYMENT_BLOCKED")
+        data["ready_for_dispatch"] = derived_count("READY_FOR_DISPATCH")
+        data["dispatch_in_process"] = derived_count("DISPATCH_IN_PROCESS")
+        past_dispatch = ["INSTALLATION", "NET_METERING", "REGISTRATION_2", "ACCOUNTS_2"]
+        data["completed"] = len([e for e in ecps if e["current_stage"] in past_dispatch or e["status"] in ("COMPLETED", "CLOSED")])
+
+    elif role == "INSTALLATION":
+        mine = [s for s in site_visits if s["assigned_user"] == user["id"]]
+        data["sv_upcoming"] = len([s for s in mine if s["status"] == "ASSIGNED" and (s.get("visit_date") or "")[:10] > today])
+        data["sv_today"] = len([s for s in mine if s["status"] == "ASSIGNED" and (s.get("visit_date") or "")[:10] == today])
+        data["sv_assigned"] = len([s for s in mine if s["status"] == "ASSIGNED"])
+        data["sv_completed"] = len([s for s in mine if s["status"] == "DONE"])
+        data["ready_to_install"] = derived_count("READY_TO_INSTALL")
+        data["installation_in_process"] = derived_count("IN_PROCESS")
+        data["net_metering"] = ecp_stage_count("NET_METERING")
+
+    elif role == "REGISTRATION":
+        data["registration_1"] = ecp_stage_count("REGISTRATION_1")
+        data["registration_2"] = ecp_stage_count("REGISTRATION_2")
+        data["pending"] = ecp_stage_count("REGISTRATION_1") + ecp_stage_count("REGISTRATION_2")
+
+    return data
+
+
+@api.get("/meta")
+async def meta(user: dict = Depends(get_current_user)):
+    return {
+        "roles": wf.ROLES, "role_labels": wf.ROLE_LABELS,
+        "stage_order": wf.STAGE_ORDER, "stage_labels": wf.STAGE_LABELS,
+        "lost_reasons": wf.LOST_REASONS, "closure_reasons": wf.CLOSURE_REASONS,
+    }
+
+
+app.include_router(api)
 
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
+    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+
+@app.on_event("startup")
+async def startup():
+    await db.users.create_index("username", unique=True)
+    await db.leads.create_index("status")
+    await db.ecps.create_index("current_stage")
+    await db.payments.create_index("ecp_id")
+    await seed()
+
+
+async def seed():
+    owner_username = os.environ.get("OWNER_USERNAME", "anoopdube07@gmail.com").strip().lower()
+    owner_password = os.environ.get("OWNER_PASSWORD", "Owner@123")
+    existing = await db.users.find_one({"username": owner_username})
+    if not existing:
+        await db.users.insert_one({
+            "id": new_id(), "username": owner_username, "password_hash": hash_password(owner_password),
+            "name": "Anoop Dube", "role": "OWNER", "team": "OWNER", "active": True, "created_at": now_iso()})
+        logger.info("Seeded owner user")
+    # demo team users
+    demo = [
+        ("manager", "Manager@123", "Priya Manager", "MANAGER"),
+        ("lead", "Lead@123", "Rahul Lead", "LEAD"),
+        ("registration", "Reg@123", "Sunita Reg", "REGISTRATION"),
+        ("accounts", "Acct@123", "Vikram Accounts", "ACCOUNTS"),
+        ("dispatch", "Disp@123", "Amit Dispatch", "DISPATCH"),
+        ("installation", "Install@123", "Ravi Install", "INSTALLATION"),
+    ]
+    for uname, pwd, name, role in demo:
+        if not await db.users.find_one({"username": uname}):
+            await db.users.insert_one({
+                "id": new_id(), "username": uname, "password_hash": hash_password(pwd),
+                "name": name, "role": role, "team": role, "active": True, "created_at": now_iso()})
+
 
 @app.on_event("shutdown")
-async def shutdown_db_client():
+async def shutdown():
     client.close()
