@@ -99,8 +99,8 @@ class TestLeadActions:
         bundle = r.json()
         assert bundle["lead"]["status"] == "QUALIFIED"
         assert bundle["ecp"] is not None
-        assert bundle["ecp"]["current_stage"] == "REGISTRATION_1"
-        assert bundle["ecp"]["current_team"] == "REGISTRATION"
+        assert bundle["ecp"]["current_stage"] == "PENDING_DOCUMENTS"
+        assert bundle["ecp"]["current_team"] == "LEAD"
         # Second YES rejected
         r2 = requests.post(f"{API}/leads/{lid}/action", json={"action": "YES"}, headers=_hdr(tokens["lead"]))
         assert r2.status_code == 400
@@ -219,11 +219,25 @@ class TestLeadActions:
 
 
 # --------------- ECP FLOW ---------------
+def _release_docs(lead_id, tokens, financing=False):
+    png = b"\x89PNG\r\n\x1a\n" + b"0" * 64
+    types = ["PAN", "AADHAAR", "ELECTRICITY_BILL"]
+    if financing:
+        types.append("PROPERTY_PAPER")
+    types.append("BANK_PASSBOOK")
+    for t in types:
+        rr = requests.post(f"{API}/leads/{lead_id}/documents", data={"doc_type": t},
+                           files={"file": ("d.png", png, "image/png")}, headers=_hdr(tokens["lead"]))
+        assert rr.status_code == 200, f"doc {t}: {rr.text}"
+
+
 def _qualify_and_get_ecp(tokens, financing=False):
     lid = _new_lead(tokens, financing=financing)
     r = requests.post(f"{API}/leads/{lid}/action", json={"action": "YES"}, headers=_hdr(tokens["lead"]))
     assert r.status_code == 200
-    return lid, r.json()["ecp"]["id"]
+    ecp_id = r.json()["ecp"]["id"]
+    _release_docs(lid, tokens, financing)
+    return lid, ecp_id
 
 
 def _tasks_for_stage(ecp_id, stage, token):

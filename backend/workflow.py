@@ -29,6 +29,7 @@ STAGE_ORDER = [
 ]
 
 STAGE_LABELS = {
+    "PENDING_DOCUMENTS": "Pending Documents",
     "REGISTRATION_1": "Registration 1",
     "ACCOUNTS_1": "Accounts 1",
     "DISPATCH": "Dispatch",
@@ -42,6 +43,7 @@ STAGE_LABELS = {
 
 # Team responsible for each stage
 STAGE_TEAM = {
+    "PENDING_DOCUMENTS": "LEAD",
     "REGISTRATION_1": "REGISTRATION",
     "ACCOUNTS_1": "ACCOUNTS",
     "DISPATCH": "DISPATCH",
@@ -66,6 +68,42 @@ STAGE_TASKS = {
 }
 
 LEAD_ACTIONS = ["YES", "NO", "FOLLOW_UP", "SITE_VISIT", "ESCALATION"]
+
+# ---- Phase 3: Documents ----
+# Single required document types
+DOC_REQUIRED_SINGLE = ["PAN", "AADHAAR", "ELECTRICITY_BILL"]
+# Bank proof group — at least one of these is required
+DOC_BANK_GROUP = ["BANK_PASSBOOK", "BANK_STATEMENT", "CANCELLED_CHEQUE"]
+# Finance group — at least one required ONLY when financing_required is True
+DOC_FINANCE_GROUP = ["PROPERTY_PAPER", "TAX_RECEIPT"]
+
+DOC_TYPES = DOC_REQUIRED_SINGLE + DOC_BANK_GROUP + DOC_FINANCE_GROUP
+
+DOC_LABELS = {
+    "PAN": "PAN Card",
+    "AADHAAR": "Aadhaar Card",
+    "ELECTRICITY_BILL": "Electricity Bill",
+    "BANK_PASSBOOK": "Bank Passbook Photo",
+    "BANK_STATEMENT": "3-Month Bank Statement",
+    "CANCELLED_CHEQUE": "Cancelled Cheque",
+    "PROPERTY_PAPER": "Property Paper",
+    "TAX_RECEIPT": "Tax Receipt",
+}
+
+DOC_ALLOWED_CONTENT_TYPES = {"image/jpeg", "image/png", "application/pdf"}
+DOC_ALLOWED_EXT = {"jpg", "jpeg", "png", "pdf"}
+DOC_MAX_BYTES = 10 * 1024 * 1024  # 10 MB
+
+
+def documents_complete(current_types: set, financing: bool) -> bool:
+    if not all(t in current_types for t in DOC_REQUIRED_SINGLE):
+        return False
+    if not any(t in current_types for t in DOC_BANK_GROUP):
+        return False
+    if financing and not any(t in current_types for t in DOC_FINANCE_GROUP):
+        return False
+    return True
+
 
 LOST_REASONS = ["PRICE", "COMPETITOR", "NOT_INTERESTED", "UNREACHABLE", "OTHER"]
 CLOSURE_REASONS = ["CUSTOMER_CANCELLED", "DUPLICATE", "NOT_FEASIBLE", "OTHER"]

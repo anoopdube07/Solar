@@ -62,12 +62,26 @@ def _new_lead(tokens, financing=False):
     return r.json()["id"]
 
 
+def _release_docs(lead_id, tokens, financing=False):
+    png = b"\x89PNG\r\n\x1a\n" + b"0" * 64
+    types = ["PAN", "AADHAAR", "ELECTRICITY_BILL"]
+    if financing:
+        types.append("PROPERTY_PAPER")
+    types.append("BANK_PASSBOOK")
+    for t in types:
+        rr = requests.post(f"{API}/leads/{lead_id}/documents", data={"doc_type": t},
+                           files={"file": ("d.png", png, "image/png")}, headers=_hdr(tokens["lead"]))
+        assert rr.status_code == 200, f"doc {t}: {rr.text}"
+
+
 def _qualify(tokens, financing=False):
     lid = _new_lead(tokens, financing=financing)
     r = requests.post(f"{API}/leads/{lid}/action", json={"action": "YES"},
                       headers=_hdr(tokens["lead"]))
     assert r.status_code == 200, r.text
-    return lid, r.json()["ecp"]["id"]
+    ecp_id = r.json()["ecp"]["id"]
+    _release_docs(lid, tokens, financing)
+    return lid, ecp_id
 
 
 def _complete_all(ecp_id, stage, token):

@@ -5,6 +5,7 @@ import { useAuth } from "@/context/AuthContext";
 import { PageHeader } from "@/components/ui-bits";
 import { StatusBadge, DelayedBadge } from "@/components/StatusBadge";
 import { STAGE_ORDER, STAGE_LABELS, DERIVED_LABELS } from "@/lib/constants";
+import { DocumentsPanel } from "@/components/DocumentsPanel";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -103,6 +104,11 @@ export default function ECPDetail() {
               {!ecp.final_payment_confirmed && <span className="text-xs font-semibold text-amber-600">FINAL PAYMENT PENDING</span>}
             </div>
           )}
+          {stage === "PENDING_DOCUMENTS" && (
+            <div className="mt-4 text-sm bg-amber-50 border border-amber-200 rounded-md px-3 py-2 text-amber-800" data-testid="ecp-pending-docs-notice">
+              <b>Pending Documents</b> — Registration 1 cannot start until all required customer documents are uploaded by the Lead Team.
+            </div>
+          )}
           {ecp.status === "CLOSED" && (
             <div className="mt-4 text-sm bg-slate-50 border rounded-md px-3 py-2 text-slate-700">
               Closed/Cancelled · reason: <b>{ecp.closure_reason}</b>{ecp.closure_remarks ? ` — ${ecp.closure_remarks}` : ""} · by {ecp.closed_by_name}
@@ -124,6 +130,11 @@ export default function ECPDetail() {
         </Card>
 
         {/* stepper */}
+        {(user.role === "OWNER" || user.role === "LEAD" || user.role === "MANAGER" || (user.role === "REGISTRATION" && stage !== "PENDING_DOCUMENTS")) && (
+          <DocumentsPanel leadId={ecp.lead_id}
+            canUpload={(user.role === "OWNER" || user.role === "LEAD") && stage === "PENDING_DOCUMENTS"}
+            onChange={load} />
+        )}
         <Card className="p-5">
           <div className="flex flex-wrap gap-2">
             {STAGE_ORDER.map((s, i) => {

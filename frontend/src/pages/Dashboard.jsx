@@ -48,6 +48,7 @@ export default function Dashboard() {
     ]]);
     sections.push(["ECP Projects", [
       ["Active", d.ecp.ACTIVE, "sky", go("/ecps")],
+      ["Pending Documents", d.ecp.PENDING_DOCUMENTS, "amber", go("/ecps?stage=PENDING_DOCUMENTS")],
       ["Registration 1", d.ecp.REGISTRATION_1, "slate", go("/ecps?stage=REGISTRATION_1")],
       ["Accounts 1", d.ecp.ACCOUNTS_1, "slate", go("/ecps?stage=ACCOUNTS_1")],
       ["Payment Blocked", d.ecp.PAYMENT_BLOCKED, "red", go("/ecps?stage=DISPATCH")],
@@ -86,6 +87,7 @@ export default function Dashboard() {
       ["Waiting for Site Visit", d.waiting_site_visit, "indigo", go("/leads?status=SITE_VISIT")],
       ["Escalated", d.escalated, "red", go("/leads?status=ESCALATED")],
       ["Qualified", d.qualified, "emerald", go("/leads?status=QUALIFIED")],
+      ["Awaiting Documents", d.pending_documents, "amber", go("/leads?status=QUALIFIED")],
       ["Lost", d.lost, "slate", go("/leads?status=LOST")],
     ]]);
   } else if (user.role === "ACCOUNTS") {
@@ -115,6 +117,7 @@ export default function Dashboard() {
     ]]);
   } else if (user.role === "REGISTRATION") {
     sections.push(["Registration", [
+      ["Awaiting Documents", d.pending_documents, "amber", () => {}],
       ["Registration 1", d.registration_1, "sky", go("/ecps?stage=REGISTRATION_1")],
       ["Registration 2", d.registration_2, "sky", go("/ecps?stage=REGISTRATION_2")],
       ["Pending Total", d.pending, "amber", go("/ecps")],

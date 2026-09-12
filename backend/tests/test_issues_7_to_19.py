@@ -59,6 +59,18 @@ def _new_lead(tokens, **extra):
     return r.json()
 
 
+def _release_docs(lead_id, tokens, financing=False):
+    png = b"\x89PNG\r\n\x1a\n" + b"0" * 64
+    types = ["PAN", "AADHAAR", "ELECTRICITY_BILL"]
+    if financing:
+        types.append("PROPERTY_PAPER")
+    types.append("BANK_PASSBOOK")
+    for t in types:
+        rr = requests.post(f"{API}/leads/{lead_id}/documents", data={"doc_type": t},
+                           files={"file": ("d.png", png, "image/png")}, headers=_hdr(tokens["lead"]))
+        assert rr.status_code == 200, f"doc {t}: {rr.text}"
+
+
 # ========================= ISSUE 7 =========================
 class TestIssue7LeadEmployeeMaster:
     def test_owner_only_create(self, tokens):
@@ -173,6 +185,7 @@ class TestIssue9ECPStageFilterLead:
         lead = _new_lead(tokens)
         requests.post(f"{API}/leads/{lead['id']}/action", json={"action": "YES"},
                       headers=_hdr(tokens["lead"]))
+        _release_docs(lead["id"], tokens)
         r = requests.get(f"{API}/ecps?stage=REGISTRATION_1", headers=_hdr(tokens["lead"]))
         assert r.status_code == 200
         assert all(e["current_stage"] == "REGISTRATION_1" for e in r.json())

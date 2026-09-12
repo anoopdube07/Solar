@@ -11,6 +11,7 @@ export const ROLE_LABELS = {
 };
 
 export const STAGE_LABELS = {
+  PENDING_DOCUMENTS: "Pending Documents",
   REGISTRATION_1: "Registration 1",
   ACCOUNTS_1: "Accounts 1",
   DISPATCH: "Dispatch",
@@ -26,6 +27,17 @@ export const STAGE_ORDER = [
   "REGISTRATION_1", "ACCOUNTS_1", "DISPATCH", "INSTALLATION",
   "NET_METERING", "REGISTRATION_2", "ACCOUNTS_2",
 ];
+
+export const DOC_LABELS = {
+  PAN: "PAN Card",
+  AADHAAR: "Aadhaar Card",
+  ELECTRICITY_BILL: "Electricity Bill",
+  BANK_PASSBOOK: "Bank Passbook Photo",
+  BANK_STATEMENT: "3-Month Bank Statement",
+  CANCELLED_CHEQUE: "Cancelled Cheque",
+  PROPERTY_PAPER: "Property Paper",
+  TAX_RECEIPT: "Tax Receipt",
+};
 
 export const LEAD_STATUS_LABELS = {
   PENDING: "Pending",

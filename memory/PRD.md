@@ -13,7 +13,7 @@ OWNER, MANAGER (Process Owner), LEAD, REGISTRATION, ACCOUNTS, DISPATCH, INSTALLA
 
 ## Core Requirements (static — from Phase 1 spec)
 - Lead: PENDING + 5 actions (YES/NO/FOLLOW_UP/SITE_VISIT/ESCALATION). Only Lead Team decides.
-- YES auto-creates exactly one ECP (max 1 per lead lifetime) at REGISTRATION_1.
+- YES auto-creates exactly one ECP (max 1 per lead lifetime), held at PENDING_DOCUMENTS until required documents are uploaded (Phase 3), then REGISTRATION_1.
 - ECP pipeline REGISTRATION_1 → ACCOUNTS_1 → DISPATCH → INSTALLATION → NET_METERING → REGISTRATION_2 → ACCOUNTS_2 → COMPLETED, with automatic handoffs.
 - START DISPATCH gated server-side on FIRST payment CONFIRMED; final payment never blocks; closure ignores payments.
 - Derived statuses (Payment Blocked / Ready for Dispatch / Dispatch In Process / Delayed) — never workflow stages.
@@ -47,5 +47,18 @@ OWNER, MANAGER (Process Owner), LEAD, REGISTRATION, ACCOUNTS, DISPATCH, INSTALLA
 ## Known test hygiene note
 Legacy Phase-1 pytest files were updated (2026-09-12) to comply with approved rules: lead-creation phones are now uuid-based (no duplicate-phone 409 collisions); the obsolete direct post-handoff price test now expects 400 + commercial-change flow; the ADDITIONAL-payment test uses IST today (no future-date rejection). Full relevant suite green: 77 legacy + 25 Phase 2 + 16 Phase 2-final.
 
-## Next Tasks
-- Phase 2 fully verified (incl. Item delete + post-handoff editing/propagation + regression). AWAITING USER APPROVAL before starting Phase 3 (Documents / object storage) — fetch object-storage playbook via integration_expert when approved.
+## Master Spec Phase 3 — Documents + Pending Documents Gate — DONE & verified (2026-06 / iteration_7)
+- **New ECP stage `PENDING_DOCUMENTS`** (team LEAD): YES now creates the ECP here with NO Registration-1 tasks. Registration cannot start Reg 1 until docs complete (PENDING_DOCUMENTS ECPs excluded from Registration's `/api/ecps`, no tasks exist, doc read 403 pre-registration).
+- **Mandatory docs**: PAN, Aadhaar, Electricity Bill, + ONE of {Bank Passbook, 3-Month Statement, Cancelled Cheque}; if Finance=YES also ONE of {Property Paper, Tax Receipt}. `workflow.documents_complete()`.
+- **Auto-release**: the upload that completes the applicable set advances PENDING_DOCUMENTS → REGISTRATION_1 (creates Reg1 tasks; base 4, +3 loan if financing). Manual `POST /api/leads/{id}/documents/release` (LEAD owner/OWNER) 400s if incomplete.
+- **Object storage** (`backend/storage.py`, Emergent): files in object storage, metadata in `lead_documents` (doc_type, storage_path, original_filename, content_type, size, uploaded_by, uploaded_at, status CURRENT/REPLACED). Re-upload marks prior CURRENT as REPLACED (history preserved). Content-type limited to jpg/png/pdf; max 10 MB.
+- **APIs**: `POST/GET /api/leads/{id}/documents`, `GET /api/leads/{id}/documents/{doc_id}/download`, `POST /api/leads/{id}/documents/release`.
+- **RBAC** (`_lead_for_doc`): OWNER full; LEAD only own lead (previous owner loses access after reassign); MANAGER read; REGISTRATION read only after reaching Registration; ACCOUNTS/DISPATCH/INSTALLATION 403.
+- **Financing changes** while PENDING re-evaluate the finance-doc requirement (`_apply_ecp_financing` skips task creation while PENDING_DOCUMENTS). Grandfathering: existing REGISTRATION_1+ ECPs untouched.
+- **UI**: `DocumentsPanel` on LeadDetail + ECPDetail (per-type rows, upload/replace, overall COMPLETE/INCOMPLETE badge, missing list, download); ECPDetail `ecp-pending-docs-notice`; Dashboard counters (Owner ECP "Pending Documents", Registration + Lead "Awaiting Documents").
+- **Tests**: `tests/test_phase3_documents.py` 35/35 pass; full backend suite 118 legacy/phase2 green (4 unrelated pre-existing flakes: transient upload 502 + stateful money math).
+
+## Next Tasks (awaiting user approval — do NOT start until approved)
+- Phase 4: Registration task rework (Consumer Request / Vendor Acceptance / conditional loan tasks, NM sequencing).
+- Phase 5: Delivery Challan (Dispatch finalizes in-app → Accounts; hide financials from Dispatch).
+- Phase 6: Installation Manager → Member; Phase 7: Site Visit survey; Phase 8: Complaints module.

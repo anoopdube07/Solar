@@ -4,6 +4,7 @@ import api, { apiError } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { PageHeader } from "@/components/ui-bits";
 import { StatusBadge } from "@/components/StatusBadge";
+import { DocumentsPanel } from "@/components/DocumentsPanel";
 import { RETURN_REASON_LABELS } from "@/lib/constants";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -252,6 +253,11 @@ export default function LeadDetail() {
                 <Button variant="outline" onClick={() => nav(`/ecps/${ecp.id}`)}>Open ECP</Button>
               </div>
             </Card>
+          )}
+          {ecp && (
+            <DocumentsPanel leadId={id}
+              canUpload={(isOwnerLead || user.role === "OWNER") && ecp.current_stage === "PENDING_DOCUMENTS"}
+              onChange={load} />
           )}
         </div>
 

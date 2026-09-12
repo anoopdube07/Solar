@@ -10,7 +10,7 @@ import uuid
 import logging
 from datetime import datetime, timezone, timedelta
 
-from fastapi import FastAPI, APIRouter, HTTPException, Request, Depends
+from fastapi import FastAPI, APIRouter, HTTPException, Request, Depends, UploadFile, File, Form, Header, Query
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field
@@ -21,6 +21,7 @@ from auth import (
 )
 import workflow as wf
 from extras import ist_today_str, ist_day_bounds, to_csv
+from storage import put_object, get_object, init_storage, APP_NAME
 from fastapi.responses import Response
 
 # ---- DB ----
@@ -327,6 +328,23 @@ async def create_lead(body: LeadCreate, user: dict = Depends(get_current_user)):
     return d
 
 
+async def _current_docs(lead_id: str):
+    return await db.lead_documents.find({"lead_id": lead_id, "status": "CURRENT"}, NO_ID).sort("uploaded_at", -1).to_list(200)
+
+
+async def _documents_status(lead_id: str, financing: bool):
+    docs = await _current_docs(lead_id)
+    types = {d["doc_type"] for d in docs}
+    missing = [wf.DOC_LABELS[t] for t in wf.DOC_REQUIRED_SINGLE if t not in types]
+    if not any(t in types for t in wf.DOC_BANK_GROUP):
+        missing.append("Bank Proof (Passbook / 3-Month Statement / Cancelled Cheque)")
+    if financing and not any(t in types for t in wf.DOC_FINANCE_GROUP):
+        missing.append("Finance Proof (Property Paper / Tax Receipt)")
+    return {"complete": wf.documents_complete(types, financing),
+            "uploaded_types": sorted(types), "missing": missing, "count": len(docs),
+            "financing_required": financing}
+
+
 async def _lead_bundle(lead_id: str):
     lead = await db.leads.find_one({"id": lead_id}, NO_ID)
     if not lead:
@@ -337,8 +355,9 @@ async def _lead_bundle(lead_id: str):
     ecp = None
     if lead.get("ecp_id"):
         ecp = await db.ecps.find_one({"id": lead["ecp_id"]}, NO_ID)
+    docs_status = await _documents_status(lead_id, bool(lead.get("financing_required")))
     return {"lead": lead, "followups": followups, "site_visits": site_visits,
-            "escalations": escalations, "ecp": ecp}
+            "escalations": escalations, "ecp": ecp, "documents_status": docs_status}
 
 
 @api.get("/leads/{lead_id}")
@@ -407,8 +426,9 @@ async def create_ecp_from_lead(lead: dict, user: dict):
         "lead_creator_name": lead.get("lead_creator_name"),
         "lead_owner_id": lead.get("lead_owner_id"),
         "lead_owner_name": lead.get("lead_owner_name"),
-        "current_stage": "REGISTRATION_1",
-        "current_team": wf.STAGE_TEAM["REGISTRATION_1"],
+        "current_stage": "PENDING_DOCUMENTS",
+        "current_team": "LEAD",
+        "documents_released": False,
         "responsible_user": None,
         "responsible_user_name": None,
         "financing_required": financing,
@@ -424,21 +444,33 @@ async def create_ecp_from_lead(lead: dict, user: dict):
         "updated_at": now_iso(),
     }
     await db.ecps.insert_one(ecp)
-    # tasks for registration 1
-    tasks = list(wf.REG1_BASE_TASKS)
-    task_docs = []
-    for t in tasks:
-        task_docs.append(_make_task(ecp_id, "REGISTRATION_1", t, True))
+    await db.ecp_stage_history.insert_one({
+        "id": new_id(), "ecp_id": ecp_id, "from_stage": None, "to_stage": "PENDING_DOCUMENTS",
+        "changed_by": user["id"], "changed_by_name": user["name"], "changed_at": now_iso(),
+        "note": "ECP created from qualified lead — pending required documents",
+    })
+    return ecp_id
+
+
+async def _create_reg1_tasks(ecp_id: str, financing: bool):
+    task_docs = [_make_task(ecp_id, "REGISTRATION_1", t, True) for t in wf.REG1_BASE_TASKS]
     for t in wf.REG1_FINANCING_TASKS:
         task_docs.append(_make_task(ecp_id, "REGISTRATION_1", t, financing))
     if task_docs:
         await db.ecp_tasks.insert_many(task_docs)
+
+
+async def _release_documents_to_reg1(ecp: dict, user: dict):
+    ecp_id = ecp["id"]
+    await _create_reg1_tasks(ecp_id, bool(ecp.get("financing_required")))
+    await db.ecps.update_one({"id": ecp_id}, {"$set": {
+        "current_stage": "REGISTRATION_1", "current_team": wf.STAGE_TEAM["REGISTRATION_1"],
+        "documents_released": True, "stage_entry_date": now_iso(), "updated_at": now_iso()}})
     await db.ecp_stage_history.insert_one({
-        "id": new_id(), "ecp_id": ecp_id, "from_stage": None, "to_stage": "REGISTRATION_1",
+        "id": new_id(), "ecp_id": ecp_id, "from_stage": "PENDING_DOCUMENTS", "to_stage": "REGISTRATION_1",
         "changed_by": user["id"], "changed_by_name": user["name"], "changed_at": now_iso(),
-        "note": "ECP created from qualified lead",
+        "note": "All required documents uploaded — released to Registration 1",
     })
-    return ecp_id
 
 
 def _make_task(ecp_id, stage, name, applicable):
@@ -688,6 +720,9 @@ async def enrich_ecp(ecp: dict, sla_map: dict = None):
             derived = "DISPATCH_IN_PROCESS"
     elif stage == "INSTALLATION":
         derived = ecp.get("install_status") or "READY_TO_INSTALL"
+    elif stage == "PENDING_DOCUMENTS":
+        derived = "PENDING_DOCUMENTS"
+        ecp["documents_status"] = await _documents_status(ecp["lead_id"], bool(ecp.get("financing_required")))
     # delayed
     delayed = False
     days_in_stage = None
@@ -937,6 +972,8 @@ async def _apply_ecp_financing(ecp_id: str, financing: bool, user: dict):
     if not ecp:
         return
     await db.ecps.update_one({"id": ecp_id}, {"$set": {"financing_required": financing, "updated_at": now_iso()}})
+    if ecp.get("current_stage") == "PENDING_DOCUMENTS":
+        return  # Registration-1 tasks are created only when documents are released
     for t in wf.REG1_FINANCING_TASKS:
         existing = await db.ecp_tasks.find_one({"ecp_id": ecp_id, "task_name": t})
         if existing:
@@ -1153,7 +1190,8 @@ async def dashboard(user: dict = Depends(get_current_user)):
             "ACCOUNTS_2": ecp_stage_count("ACCOUNTS_2"),
             "DELAYED": len(delayed),
             "COMPLETED": len([e for e in ecps if e["status"] == "COMPLETED"]),
-            "CLOSED": len([e for e in ecps if e["status"] == "CLOSED"])}
+            "CLOSED": len([e for e in ecps if e["status"] == "CLOSED"]),
+            "PENDING_DOCUMENTS": ecp_stage_count("PENDING_DOCUMENTS")}
         data["payments"] = {
             "FIRST_PENDING": pay_count("FIRST", "PENDING"), "FIRST_CONFIRMED": pay_count("FIRST", "CONFIRMED"),
             "FINAL_PENDING": pay_count("FINAL", "PENDING"), "FINAL_CONFIRMED": pay_count("FINAL", "CONFIRMED"),
@@ -1176,6 +1214,7 @@ async def dashboard(user: dict = Depends(get_current_user)):
         data["escalated"] = lead_count("ESCALATED")
         data["qualified"] = lead_count("QUALIFIED")
         data["lost"] = lead_count("LOST")
+        data["pending_documents"] = len([e for e in active_ecps if e["current_stage"] == "PENDING_DOCUMENTS" and e.get("lead_owner_id") in (user["id"], None)])
 
     elif role == "ACCOUNTS":
         by_ecp = {}
@@ -1220,6 +1259,7 @@ async def dashboard(user: dict = Depends(get_current_user)):
         data["registration_1"] = ecp_stage_count("REGISTRATION_1")
         data["registration_2"] = ecp_stage_count("REGISTRATION_2")
         data["pending"] = ecp_stage_count("REGISTRATION_1") + ecp_stage_count("REGISTRATION_2")
+        data["pending_documents"] = ecp_stage_count("PENDING_DOCUMENTS")
 
     return data
 
@@ -1633,6 +1673,124 @@ async def quotation_pdf(lead_id: str, user: dict = Depends(get_current_user)):
                     headers={"Content-Disposition": f"attachment; filename=quotation_{lead['id'][:8]}.pdf"})
 
 
+# ========================= PHASE 3: DOCUMENTS =========================
+async def _lead_for_doc(lead_id: str, user: dict, mode: str):
+    lead = await db.leads.find_one({"id": lead_id}, NO_ID)
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    role = user["role"]
+    if role == "OWNER":
+        return lead
+    if role == "LEAD":
+        if lead.get("lead_owner_id") not in (user["id"], None):
+            raise HTTPException(status_code=403, detail="This lead is not assigned to you")
+        return lead
+    if mode == "read":
+        if role == "MANAGER":
+            return lead
+        if role == "REGISTRATION":
+            ecp = await db.ecps.find_one({"id": lead.get("ecp_id")}, NO_ID) if lead.get("ecp_id") else None
+            if ecp and ecp.get("current_stage") != "PENDING_DOCUMENTS":
+                return lead
+            raise HTTPException(status_code=403, detail="Documents are available only after the lead reaches Registration")
+    raise HTTPException(status_code=403, detail="Not authorized to access these documents")
+
+
+_EXT_BY_CT = {"image/jpeg": "jpg", "image/png": "png", "application/pdf": "pdf"}
+
+
+@api.post("/leads/{lead_id}/documents")
+async def upload_document(lead_id: str, doc_type: str = Form(...), file: UploadFile = File(...),
+                          user: dict = Depends(get_current_user)):
+    require(user, "LEAD", "OWNER")
+    lead = await _lead_for_doc(lead_id, user, "write")
+    if doc_type not in wf.DOC_TYPES:
+        raise HTTPException(status_code=400, detail="Invalid document type")
+    ext = file.filename.rsplit(".", 1)[-1].lower() if file.filename and "." in file.filename else ""
+    ct = (file.content_type or "").lower()
+    if ct not in wf.DOC_ALLOWED_CONTENT_TYPES and ext not in wf.DOC_ALLOWED_EXT:
+        raise HTTPException(status_code=400, detail="Only JPG, PNG or PDF files are allowed")
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty file")
+    if len(data) > wf.DOC_MAX_BYTES:
+        raise HTTPException(status_code=400, detail="File too large (max 10 MB)")
+    if ext not in wf.DOC_ALLOWED_EXT:
+        ext = _EXT_BY_CT.get(ct, "bin")
+    path = f"{APP_NAME}/documents/{lead_id}/{new_id()}.{ext}"
+    try:
+        result = put_object(path, data, ct or "application/octet-stream")
+    except Exception as e:
+        logger.error(f"storage upload failed: {e}")
+        raise HTTPException(status_code=502, detail="File storage upload failed")
+    await db.lead_documents.update_many(
+        {"lead_id": lead_id, "doc_type": doc_type, "status": "CURRENT"},
+        {"$set": {"status": "REPLACED", "replaced_at": now_iso()}})
+    doc = {"id": new_id(), "lead_id": lead_id, "ecp_id": lead.get("ecp_id"), "doc_type": doc_type,
+           "storage_path": result.get("path", path), "original_filename": file.filename or f"{doc_type}.{ext}",
+           "content_type": ct or "application/octet-stream", "size": result.get("size", len(data)),
+           "uploaded_by": user["id"], "uploaded_by_name": user["name"], "uploaded_at": now_iso(),
+           "status": "CURRENT"}
+    await db.lead_documents.insert_one(doc)
+    await log_activity(user, "Document Uploaded", "LEAD", lead_id, lead.get("name", ""), wf.DOC_LABELS.get(doc_type, doc_type))
+    financing = bool(lead.get("financing_required"))
+    status = await _documents_status(lead_id, financing)
+    released = False
+    if status["complete"] and lead.get("ecp_id"):
+        ecp = await db.ecps.find_one({"id": lead["ecp_id"]}, NO_ID)
+        if ecp and ecp.get("current_stage") == "PENDING_DOCUMENTS":
+            await _release_documents_to_reg1(ecp, user)
+            released = True
+    d = dict(doc); d.pop("_id", None)
+    return {"document": d, "documents_status": status, "released": released}
+
+
+@api.get("/leads/{lead_id}/documents")
+async def list_documents(lead_id: str, user: dict = Depends(get_current_user)):
+    lead = await _lead_for_doc(lead_id, user, "read")
+    current = await db.lead_documents.find({"lead_id": lead_id, "status": "CURRENT"}, NO_ID).sort("uploaded_at", -1).to_list(200)
+    history = await db.lead_documents.find({"lead_id": lead_id, "status": "REPLACED"}, NO_ID).sort("uploaded_at", -1).to_list(500)
+    ecp_stage = None
+    if lead.get("ecp_id"):
+        e = await db.ecps.find_one({"id": lead["ecp_id"]}, {"_id": 0, "current_stage": 1})
+        ecp_stage = e["current_stage"] if e else None
+    return {"documents": current, "history": history,
+            "documents_status": await _documents_status(lead_id, bool(lead.get("financing_required"))),
+            "ecp_stage": ecp_stage}
+
+
+@api.get("/leads/{lead_id}/documents/{doc_id}/download")
+async def download_document(lead_id: str, doc_id: str, user: dict = Depends(get_current_user)):
+    await _lead_for_doc(lead_id, user, "read")
+    doc = await db.lead_documents.find_one({"id": doc_id, "lead_id": lead_id}, NO_ID)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    try:
+        content, ct = get_object(doc["storage_path"])
+    except Exception as e:
+        logger.error(f"storage download failed: {e}")
+        raise HTTPException(status_code=502, detail="File retrieval failed")
+    return Response(content=content, media_type=doc.get("content_type") or ct,
+                    headers={"Content-Disposition": f'inline; filename="{doc.get("original_filename", "document")}"'})
+
+
+@api.post("/leads/{lead_id}/documents/release")
+async def release_documents(lead_id: str, user: dict = Depends(get_current_user)):
+    require(user, "LEAD", "OWNER")
+    lead = await _lead_for_doc(lead_id, user, "write")
+    if not lead.get("ecp_id"):
+        raise HTTPException(status_code=400, detail="Lead has no ECP")
+    ecp = await db.ecps.find_one({"id": lead["ecp_id"]}, NO_ID)
+    if not ecp or ecp.get("current_stage") != "PENDING_DOCUMENTS":
+        raise HTTPException(status_code=400, detail="ECP is not pending documents")
+    status = await _documents_status(lead_id, bool(lead.get("financing_required")))
+    if not status["complete"]:
+        raise HTTPException(status_code=400, detail="Required documents are incomplete")
+    await _release_documents_to_reg1(ecp, user)
+    await log_activity(user, "Documents Released to Registration", "ECP", ecp["id"], lead.get("name", ""), "")
+    return await _lead_bundle(lead_id)
+
+
 app.include_router(api)
 
 app.add_middleware(
@@ -1650,6 +1808,15 @@ async def startup():
     await db.leads.create_index("status")
     await db.ecps.create_index("current_stage")
     await db.payments.create_index("ecp_id")
+    try:
+        await db.lead_documents.create_index("lead_id")
+    except Exception:
+        pass
+    try:
+        init_storage()
+        logger.info("Object storage initialized")
+    except Exception as e:
+        logger.error(f"Storage init failed (uploads will retry): {e}")
     await seed()
 
 
