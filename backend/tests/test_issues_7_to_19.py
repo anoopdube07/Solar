@@ -52,7 +52,7 @@ def _future(days=30):
 
 
 def _new_lead(tokens, **extra):
-    payload = {"name": f"TEST_J_{uuid.uuid4().hex[:6]}", "phone": "9998887777"}
+    payload = {"name": f"TEST_J_{uuid.uuid4().hex[:6]}", "phone": f"9{uuid.uuid4().int % 1000000000:09d}"}
     payload.update(extra)
     r = requests.post(f"{API}/leads", json=payload, headers=_hdr(tokens["lead"]))
     assert r.status_code == 200, r.text
@@ -132,7 +132,7 @@ class TestIssue7LeadEmployeeMaster:
     def test_invalid_lead_creator_rejected(self, tokens):
         r = requests.post(f"{API}/leads",
                           json={"name": f"TEST_J_BAD_{uuid.uuid4().hex[:4]}",
-                                "phone": "9990000000", "lead_creator_id": "nonexistent-id"},
+                                "phone": f"9{uuid.uuid4().int % 1000000000:09d}", "lead_creator_id": "nonexistent-id"},
                           headers=_hdr(tokens["lead"]))
         assert r.status_code == 400
 

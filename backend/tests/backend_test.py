@@ -65,14 +65,14 @@ class TestAuth:
 # --------------- LEAD CREATION RBAC ---------------
 class TestLeadRBAC:
     def test_non_lead_forbidden(self, tokens):
-        payload = {"name": "TEST_RBAC", "phone": "9999900000"}
+        payload = {"name": "TEST_RBAC", "phone": f"9{uuid.uuid4().int % 1000000000:09d}"}
         for role in ["manager", "registration", "accounts", "dispatch", "installation"]:
             r = requests.post(f"{API}/leads", json=payload, headers=_hdr(tokens[role]))
             assert r.status_code == 403, f"{role} should not create lead: {r.status_code}"
 
     def test_lead_creates_pending(self, tokens):
         r = requests.post(f"{API}/leads",
-            json={"name": f"TEST_L_{uuid.uuid4().hex[:6]}", "phone": "9998887777"},
+            json={"name": f"TEST_L_{uuid.uuid4().hex[:6]}", "phone": f"9{uuid.uuid4().int % 1000000000:09d}"},
             headers=_hdr(tokens["lead"]))
         assert r.status_code == 200, r.text
         d = r.json()
@@ -83,7 +83,7 @@ class TestLeadRBAC:
 
 def _new_lead(tokens, financing=False, name_prefix="TEST_L"):
     r = requests.post(f"{API}/leads",
-        json={"name": f"{name_prefix}_{uuid.uuid4().hex[:6]}", "phone": "9990000000",
+        json={"name": f"{name_prefix}_{uuid.uuid4().hex[:6]}", "phone": f"9{uuid.uuid4().int % 1000000000:09d}",
               "financing_required": financing},
         headers=_hdr(tokens["lead"]))
     assert r.status_code == 200, r.text

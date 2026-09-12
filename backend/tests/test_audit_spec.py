@@ -55,7 +55,7 @@ def tokens():
 
 def _new_lead(tokens, financing=False):
     r = requests.post(f"{API}/leads",
-        json={"name": f"TEST_A_{uuid.uuid4().hex[:6]}", "phone": "9990000000",
+        json={"name": f"TEST_A_{uuid.uuid4().hex[:6]}", "phone": f"9{uuid.uuid4().int % 1000000000:09d}",
               "financing_required": financing},
         headers=_hdr(tokens["lead"]))
     assert r.status_code == 200, r.text

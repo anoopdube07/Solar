@@ -31,8 +31,8 @@ OWNER, MANAGER (Process Owner), LEAD, REGISTRATION, ACCOUNTS, DISPATCH, INSTALLA
   - Deactivated items: excluded from `active_only` list, rejected on new lead creation (400 "Invalid or inactive item"), historical leads keep `item_name`/`item_unit` snapshot so records still display.
 - **Lead item fields**: `item_id` + snapshot `item_name`/`item_unit`, `quantity`, `location_link` (+ existing `project_price`). Server validates item active/exists.
 - **Owner-configurable mandatory fields**: `/api/lead-field-config`. Toggleable: email, address, location_link, item, quantity, project_price. Name & Phone always mandatory. Server-side `enforce_lead_mandatory` (400). Owner page `/lead-fields`.
-- **Post-handoff Lead editing**: `PATCH /api/leads/{id}` (LEAD owner / OWNER) for non-commercial fields. Direct `project-price` POST returns 400 once handed off.
-- **Commercial change approval**: propose (LEAD owner) → Owner approve/reject; reject remarks mandatory. Approve applies to lead + syncs ECP price. Owner dashboard banner + `pending_commercial` count. RBAC enforced.
+- **Post-handoff Lead editing**: `PATCH /api/leads/{id}` (LEAD owner / OWNER) for non-commercial fields (email/address/location_link/remarks), with an amber UI warning when handed off. Edited contact fields are **mirrored to the linked ECP** (customer_email/customer_address/location_link) so subsequent teams see them via a read-only "Customer & Product" card on ECP detail. Direct `project-price` POST returns 400 once handed off. LeadEditBody cannot change item/quantity/price or workflow/stage fields.
+- **Commercial change approval**: propose (LEAD owner) → Owner approve/reject; reject remarks mandatory. On approve, item_id/item_name/item_unit/quantity/project_price sync to the ECP. Owner dashboard banner + `pending_commercial` count. RBAC enforced (non-owner 403). ECP now also carries item/contact snapshot at creation.
 - **Quotation PDF**: `GET /api/leads/{id}/quotation` (LEAD owner / MANAGER / OWNER; non-owner LEAD → 403). Frontend Web Share + download fallback.
 - Verified: `/app/backend/tests/test_phase2.py` 25/25 PASS (iteration_5.json) + Playwright UI smoke. Item DELETE additions re-verified via curl (owner delete unused 200, non-owner 403, referenced 409, deactivated-selection 400).
 
@@ -45,7 +45,7 @@ OWNER, MANAGER (Process Owner), LEAD, REGISTRATION, ACCOUNTS, DISPATCH, INSTALLA
 - P8 Complaint module. P9 Mobile passes. P10 Full regression + security tests.
 
 ## Known test hygiene note
-Legacy Phase-1 pytest files use hardcoded phones that now collide with duplicate-active-phone 409 (correct behaviour). Refactor to uuid-based phones like test_phase2.py if re-running that suite.
+Legacy Phase-1 pytest files were updated (2026-09-12) to comply with approved rules: lead-creation phones are now uuid-based (no duplicate-phone 409 collisions); the obsolete direct post-handoff price test now expects 400 + commercial-change flow; the ADDITIONAL-payment test uses IST today (no future-date rejection). Full relevant suite green: 77 legacy + 25 Phase 2 + 16 Phase 2-final.
 
 ## Next Tasks
-- Await user verification of Phase 2 (incl. Item delete rules), then start Phase 3 (Documents / object storage) — fetch object-storage playbook via integration_expert.
+- Phase 2 fully verified (incl. Item delete + post-handoff editing/propagation + regression). AWAITING USER APPROVAL before starting Phase 3 (Documents / object storage) — fetch object-storage playbook via integration_expert when approved.

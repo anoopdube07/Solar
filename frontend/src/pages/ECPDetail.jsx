@@ -110,6 +110,19 @@ export default function ECPDetail() {
           )}
         </Card>
 
+        {/* customer & product */}
+        <Card className="p-5" data-testid="ecp-customer-card">
+          <h3 className="font-head font-semibold mb-3">Customer &amp; Product</h3>
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
+            <Info label="Phone">{ecp.customer_phone || "—"}</Info>
+            <Info label="Email">{ecp.customer_email || "—"}</Info>
+            <Info label="Address">{ecp.customer_address || "—"}</Info>
+            <Info label="Location">{ecp.location_link ? <a href={ecp.location_link} target="_blank" rel="noreferrer" className="text-sky-600 underline">Open map</a> : "—"}</Info>
+            <Info label="Item">{ecp.item_name ? `${ecp.item_name} (${ecp.item_unit})` : "—"}</Info>
+            <Info label="Quantity">{ecp.quantity ?? "—"}</Info>
+          </div>
+        </Card>
+
         {/* stepper */}
         <Card className="p-5">
           <div className="flex flex-wrap gap-2">

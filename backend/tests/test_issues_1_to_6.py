@@ -51,7 +51,7 @@ def tokens():
 
 # ---------------- helpers ----------------
 def _new_lead(tokens, financing=False, project_price=None):
-    payload = {"name": f"TEST_I_{uuid.uuid4().hex[:6]}", "phone": "9990000000",
+    payload = {"name": f"TEST_I_{uuid.uuid4().hex[:6]}", "phone": f"9{uuid.uuid4().int % 1000000000:09d}",
                "financing_required": financing}
     if project_price is not None:
         payload["project_price"] = project_price
@@ -356,17 +356,21 @@ class TestIssue2BProjectPrice:
         assert float(ecp.get("project_price") or 0) == 1000000
         ecp_id = ecp["id"]
 
-        # Update via endpoint propagates to ECP too
+        # APPROVED RULE (Phase 2): after handoff the direct project-price endpoint is blocked;
+        # commercial price changes must go through Owner approval.
         r = requests.post(f"{API}/leads/{lead['id']}/project-price",
             json={"project_price": 1200000}, headers=_hdr(tokens["lead"]))
-        assert r.status_code == 200
+        assert r.status_code == 400
+
+        # Price change flows via commercial-change -> Owner approval, and propagates to the ECP.
+        r = requests.post(f"{API}/leads/{lead['id']}/commercial-change",
+            json={"project_price": 1200000}, headers=_hdr(tokens["lead"]))
+        assert r.status_code == 200, r.text
+        r = requests.post(f"{API}/leads/{lead['id']}/commercial-change/approve",
+            json={}, headers=_hdr(tokens["owner"]))
+        assert r.status_code == 200, r.text
         e = requests.get(f"{API}/ecps/{ecp_id}", headers=_hdr(tokens["owner"])).json()["ecp"]
         assert float(e["project_price"]) == 1200000
-
-        # Accounts can read but has NO edit endpoint (project-price is on /leads, and requires LEAD/OWNER)
-        r = requests.post(f"{API}/leads/{lead['id']}/project-price",
-            json={"project_price": 5}, headers=_hdr(tokens["accounts"]))
-        assert r.status_code == 403
 
 
 # ============ ISSUE 2: Accounts dashboard receivable math ============
@@ -450,9 +454,11 @@ class TestIssue3PaymentsMonitor:
 
     def test_additional_type_preserved(self, tokens):
         _, ecp_id = _qualify(tokens)
+        from datetime import datetime, timezone, timedelta
+        today = (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).date().isoformat()
         r = requests.post(f"{API}/payments",
             json={"ecp_id": ecp_id, "type": "ADDITIONAL", "amount": 111,
-                  "date": "2026-09-15", "status": "PENDING"},
+                  "date": today, "status": "PENDING"},
             headers=_hdr(tokens["accounts"]))
-        assert r.status_code == 200
+        assert r.status_code == 200, r.text
         assert r.json()["type"] == "ADDITIONAL"

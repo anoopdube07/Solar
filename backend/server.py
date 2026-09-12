@@ -395,6 +395,13 @@ async def create_ecp_from_lead(lead: dict, user: dict):
         "lead_id": lead["id"],
         "lead_name": lead["name"],
         "customer_phone": lead.get("phone", ""),
+        "customer_email": lead.get("email", ""),
+        "customer_address": lead.get("address", ""),
+        "location_link": lead.get("location_link", ""),
+        "item_id": lead.get("item_id"),
+        "item_name": lead.get("item_name"),
+        "item_unit": lead.get("item_unit"),
+        "quantity": lead.get("quantity"),
         "project_price": float(lead.get("project_price") or 0),
         "lead_creator_id": lead.get("lead_creator_id"),
         "lead_creator_name": lead.get("lead_creator_name"),
@@ -1490,6 +1497,13 @@ async def edit_lead(lead_id: str, body: LeadEditBody, user: dict = Depends(get_c
     if upd:
         upd["updated_at"] = now_iso()
         await db.leads.update_one({"id": lead_id}, {"$set": upd})
+        # Mirror non-commercial contact fields to the linked ECP so subsequent teams see the latest values
+        if lead.get("ecp_id"):
+            ecp_map = {"email": "customer_email", "address": "customer_address", "location_link": "location_link"}
+            ecp_upd = {ecp_map[k]: upd[k] for k in ecp_map if k in upd}
+            if ecp_upd:
+                ecp_upd["updated_at"] = now_iso()
+                await db.ecps.update_one({"id": lead["ecp_id"]}, {"$set": ecp_upd})
         await log_activity(user, "Lead Edited", "LEAD", lead_id, lead["name"], ", ".join(upd.keys()))
     return await _lead_bundle(lead_id)
 
@@ -1547,8 +1561,12 @@ async def approve_commercial(lead_id: str, body: CommercialDecision, user: dict 
     pcc.update({"status": "APPROVED", "decided_by": user["name"], "decided_at": now_iso(), "decision_remarks": (body.remarks or "")})
     upd["pending_commercial_change"] = pcc
     await db.leads.update_one({"id": lead_id}, {"$set": upd})
-    if lead.get("ecp_id") and "project_price" in pcc["proposed"]:
-        await db.ecps.update_one({"id": lead["ecp_id"]}, {"$set": {"project_price": pcc["proposed"]["project_price"]}})
+    if lead.get("ecp_id"):
+        p = pcc["proposed"]
+        ecp_upd = {k: p[k] for k in ("item_id", "item_name", "item_unit", "quantity", "project_price") if k in p}
+        if ecp_upd:
+            ecp_upd["updated_at"] = now_iso()
+            await db.ecps.update_one({"id": lead["ecp_id"]}, {"$set": ecp_upd})
     await log_activity(user, "Commercial Change Approved", "LEAD", lead_id, lead["name"], str(pcc["proposed"]))
     return await _lead_bundle(lead_id)
 
