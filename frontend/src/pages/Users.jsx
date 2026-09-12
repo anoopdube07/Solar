@@ -13,7 +13,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Plus } from "lucide-react";
 import { toast } from "sonner";
 
-const ROLES = ["OWNER", "MANAGER", "LEAD", "REGISTRATION", "ACCOUNTS", "DISPATCH", "INSTALLATION"];
+const ROLES = ["OWNER", "MANAGER", "LEAD", "REGISTRATION", "ACCOUNTS", "DISPATCH", "INSTALLATION", "INSTALLATION_MANAGER", "INSTALLATION_MEMBER", "COMPLAINT"];
 
 export default function Users() {
   const [users, setUsers] = useState([]);

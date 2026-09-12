@@ -30,4 +30,11 @@
 ### Phase 10 — Tests
 - test_phase4_10.py (6 journey/security tests) PASS. Full backend regression: 159 tests pass (backend_test, test_issues_1_to_6, test_issues_7_to_19, test_audit_spec, test_phase2, test_phase2_final, test_phase3_documents, test_phase4_10). Legacy pipeline/financing/dispatch tests updated to the new rules.
 
-Note: Frontend compiles clean (HTTP 200); new-flow UI is wired (Complaints page, InstallationWork, DeliveryChallanPanel, Site Visit survey) but visual QA via the screenshot harness was blocked by an auth-persistence quirk in the preview automation; backend behavior fully verified via automated tests.
+## Final Audit (2026-06) — confirmed-gap fixes + new-role dashboards
+- Fixed: Owner user-creation dropdown now lists all 10 roles incl. INSTALLATION_MANAGER, INSTALLATION_MEMBER, COMPLAINT (Users.jsx ROLES + ROLE_LABELS). Backend wf.ROLES already accepted them; create is Owner-only (non-owner 403).
+- Added role-specific dashboard data + UI for the 3 new roles (were blank): INSTALLATION_MANAGER (Installation + Site Visit supervision queues), INSTALLATION_MEMBER (my installations / my site visits), COMPLAINT (register + status + SLA overdue/due-today).
+- COMPLAINT dashboard has a prominent "+ Register Complaint" CTA deep-linking to /complaints?new=1 (auto-opens the register dialog).
+- Verified by testing agent iteration_8: 8/8 targeted backend tests + live UI smoke, no functional bugs. Existing 159-suite untouched.
+- NOTE: The broad "operations command-center" redesign of the EXISTING role dashboards (Owner/Manager/Lead/Registration/Accounts/Dispatch) and Site-Visit geo-photo/extra-material capture UI were NOT done in this pass (budget) — existing dashboards remain functional; these are deferred.
+
+## Prior note: Frontend compiles clean (HTTP 200); Phase 4-10 new-flow UI is wired (Complaints page, InstallationWork, DeliveryChallanPanel, Site Visit survey) but visual QA via the screenshot harness was blocked by an auth-persistence quirk in the preview automation; backend behavior fully verified via automated tests.

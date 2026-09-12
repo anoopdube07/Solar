@@ -122,12 +122,43 @@ export default function Dashboard() {
       ["Registration 2", d.registration_2, "sky", go("/ecps?stage=REGISTRATION_2")],
       ["Pending Total", d.pending, "amber", go("/ecps")],
     ]]);
+  } else if (user.role === "INSTALLATION_MANAGER") {
+    sections.push(["Installation Supervision", [
+      ["Awaiting Assignment", d.awaiting_assignment, "amber", go("/ecps?view=READY_TO_INSTALL")],
+      ["In Process", d.install_in_process, "indigo", go("/ecps?view=IN_PROCESS")],
+      ["Pending Acceptance", d.pending_acceptance, "red", go("/ecps?view=IN_PROCESS")],
+      ["Net Metering", d.net_metering, "slate", go("/ecps?stage=NET_METERING")],
+    ]]);
+    sections.push(["Site Visit Supervision", [
+      ["Awaiting Assignment", d.sv_awaiting, "amber", go("/site-visits?status=REQUESTED")],
+      ["In Process", d.sv_in_process, "indigo", go("/site-visits?status=ASSIGNED")],
+    ]]);
+  } else if (user.role === "INSTALLATION_MEMBER") {
+    sections.push(["My Installations", [
+      ["Ready to Install", d.ready_to_install, "teal", go("/ecps?view=READY_TO_INSTALL")],
+      ["In Process", d.install_in_process, "indigo", go("/ecps?view=IN_PROCESS")],
+      ["Pending Acceptance", d.pending_acceptance, "amber", go("/ecps?view=IN_PROCESS")],
+    ]]);
+    sections.push(["My Site Visits", [
+      ["Assigned to Me", d.sv_assigned, "amber", go("/site-visits?status=ASSIGNED")],
+      ["Due Today", d.sv_today, "sky", go("/site-visits?status=ASSIGNED")],
+      ["Completed", d.sv_completed, "emerald", go("/site-visits?status=DONE")],
+    ]]);
+  } else if (user.role === "COMPLAINT") {
+    sections.push(["Complaint Register", [
+      ["Registered", d.registered, "amber", go("/complaints?status=REGISTERED")],
+      ["Assigned", d.assigned, "sky", go("/complaints?status=ASSIGNED")],
+      ["In Progress", d.in_progress, "indigo", go("/complaints?status=IN_PROGRESS")],
+      ["Critical (open)", d.critical, "red", go("/complaints?priority=CRITICAL")],
+      ["Due Today", d.due_today, "amber", go("/complaints")],
+      ["Overdue", d.overdue, "red", go("/complaints")],
+    ]]);
   }
 
   return (
     <div>
       <PageHeader title={`${d.role_label} Dashboard`} subtitle="Click any counter to drill down into the records."
-        right={user.role === "OWNER" && (
+        right={user.role === "OWNER" ? (
           <Dialog open={exportDlg} onOpenChange={setExportDlg}>
             <DialogTrigger asChild><Button data-testid="export-csv-button" className="bg-white/10 hover:bg-white/20 text-white"><Download size={16} className="mr-1.5" /> Export CSV</Button></DialogTrigger>
             <DialogContent>
@@ -139,7 +170,9 @@ export default function Dashboard() {
               <DialogFooter><Button data-testid="export-download-button" onClick={downloadCsv} className="bg-sky-600 hover:bg-sky-700">Download CSV</Button></DialogFooter>
             </DialogContent>
           </Dialog>
-        )} />
+        ) : user.role === "COMPLAINT" ? (
+          <Button data-testid="dashboard-register-complaint" className="bg-white text-slate-900 hover:bg-white/90 font-semibold" onClick={() => nav("/complaints?new=1")}>+ Register Complaint</Button>
+        ) : null} />
       <div className="p-6 lg:p-8 space-y-8">
         {user.role === "OWNER" && pendingComm.length > 0 && (
           <div data-testid="pending-commercial-banner" className="rounded-lg border border-amber-300 bg-amber-50 px-5 py-4 flex items-center justify-between">

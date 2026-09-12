@@ -31,6 +31,10 @@ export default function Complaints() {
 
   const load = () => api.get("/complaints").then((r) => setList(r.data)).catch(() => {});
   useEffect(() => { load(); api.get("/complaint-categories?active_only=true").then((r) => setCats(r.data)).catch(() => {}); }, []);
+  useEffect(() => {
+    const p = new URLSearchParams(window.location.search);
+    if (p.get("new") === "1" && canRegister) setRegDlg(true);
+  }, []);
 
   const register = async () => {
     try { await api.post("/complaints", form); toast.success("Complaint registered"); setRegDlg(false); setForm({ title: "", description: "", category_id: "", priority: "MEDIUM", customer_name: "", customer_phone: "" }); load(); }

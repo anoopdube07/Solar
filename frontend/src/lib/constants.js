@@ -8,6 +8,9 @@ export const ROLE_LABELS = {
   ACCOUNTS: "Accounts Team",
   DISPATCH: "Dispatch Team",
   INSTALLATION: "Installation Team",
+  INSTALLATION_MANAGER: "Installation Manager",
+  INSTALLATION_MEMBER: "Installation Member",
+  COMPLAINT: "Complaint Team",
 };
 
 export const STAGE_LABELS = {

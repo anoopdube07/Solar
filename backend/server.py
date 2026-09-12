@@ -1361,6 +1361,34 @@ async def dashboard(user: dict = Depends(get_current_user)):
         data["pending"] = ecp_stage_count("REGISTRATION_1") + ecp_stage_count("REGISTRATION_2")
         data["pending_documents"] = ecp_stage_count("PENDING_DOCUMENTS")
 
+    elif role == "INSTALLATION_MANAGER":
+        data["awaiting_assignment"] = len([e for e in active_ecps if e["current_stage"] == "INSTALLATION" and e.get("install_status") == "AWAITING_ASSIGNMENT"])
+        data["install_in_process"] = len([e for e in active_ecps if e["current_stage"] == "INSTALLATION" and e.get("install_status") in ("IN_PROCESS", "REJECTED", "READY_TO_INSTALL")])
+        data["pending_acceptance"] = len([e for e in active_ecps if e["current_stage"] == "INSTALLATION" and e.get("install_status") == "PENDING_ACCEPTANCE"])
+        data["sv_awaiting"] = len([s for s in site_visits if s["status"] == "REQUESTED"])
+        data["sv_in_process"] = len([s for s in site_visits if s["status"] == "ASSIGNED"])
+        data["net_metering"] = ecp_stage_count("NET_METERING")
+
+    elif role == "INSTALLATION_MEMBER":
+        mine = [s for s in site_visits if s["assigned_user"] == user["id"]]
+        data["sv_assigned"] = len([s for s in mine if s["status"] == "ASSIGNED"])
+        data["sv_today"] = len([s for s in mine if s["status"] == "ASSIGNED" and (s.get("visit_date") or "")[:10] == today])
+        data["sv_completed"] = len([s for s in mine if s["status"] == "DONE"])
+        my_ecps = [e for e in active_ecps if e.get("responsible_user") == user["id"]]
+        data["ready_to_install"] = len([e for e in my_ecps if e["current_stage"] == "INSTALLATION" and e.get("install_status") == "READY_TO_INSTALL"])
+        data["install_in_process"] = len([e for e in my_ecps if e["current_stage"] == "INSTALLATION" and e.get("install_status") in ("IN_PROCESS", "REJECTED")])
+        data["pending_acceptance"] = len([e for e in my_ecps if e["current_stage"] == "INSTALLATION" and e.get("install_status") == "PENDING_ACCEPTANCE"])
+
+    elif role == "COMPLAINT":
+        comps = await db.complaints.find({}, NO_ID).to_list(3000)
+        open_c = [c for c in comps if c["status"] not in ("RESOLVED", "CLOSED")]
+        data["registered"] = len([c for c in comps if c["status"] == "REGISTERED"])
+        data["assigned"] = len([c for c in comps if c["status"] == "ASSIGNED"])
+        data["in_progress"] = len([c for c in comps if c["status"] == "IN_PROGRESS"])
+        data["critical"] = len([c for c in open_c if c["priority"] == "CRITICAL"])
+        data["overdue"] = len([c for c in comps if _complaint_overdue(c)[0]])
+        data["due_today"] = len([c for c in open_c if c.get("sla_due_date") == today])
+
     return data
 
 
