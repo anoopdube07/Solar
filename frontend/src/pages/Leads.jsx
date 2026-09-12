@@ -27,9 +27,11 @@ export default function Leads() {
   const followupFilter = params.get("followup") || "";
   const [leads, setLeads] = useState([]);
   const [employees, setEmployees] = useState([]);
+  const [items, setItems] = useState([]);
+  const [req, setReq] = useState({});
   const [q, setQ] = useState("");
   const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({ name: "", phone: "", email: "", address: "", source: "", financing_required: false, project_price: "", lead_creator_id: "", remarks: "" });
+  const [form, setForm] = useState({ name: "", phone: "", email: "", address: "", source: "", financing_required: false, project_price: "", lead_creator_id: "", item_id: "", quantity: "", location_link: "", remarks: "" });
 
   const load = () => {
     const p = new URLSearchParams();
@@ -38,18 +40,29 @@ export default function Leads() {
     api.get(`/leads${p.toString() ? "?" + p.toString() : ""}`).then((r) => setLeads(r.data));
   };
   useEffect(() => { load(); }, [statusFilter, followupFilter]);
-  useEffect(() => { api.get("/lead-employees?active_only=true").then((r) => setEmployees(r.data)).catch(() => {}); }, []);
+  useEffect(() => {
+    api.get("/lead-employees?active_only=true").then((r) => setEmployees(r.data)).catch(() => {});
+    api.get("/items?active_only=true").then((r) => setItems(r.data)).catch(() => {});
+    api.get("/lead-field-config").then((r) => setReq(r.data.fields || {})).catch(() => {});
+  }, []);
 
   const canCreate = user.role === "LEAD" || user.role === "OWNER";
   const filtered = leads.filter((l) => !q || l.name.toLowerCase().includes(q.toLowerCase()) || (l.phone || "").includes(q));
+  const mark = (k) => (req[k] ? " *" : "");
 
   const create = async () => {
     if (!form.name || !form.phone) { toast.error("Name and phone are required"); return; }
     try {
-      await api.post("/leads", { ...form, project_price: parseFloat(form.project_price) || 0, lead_creator_id: form.lead_creator_id || null });
+      await api.post("/leads", {
+        ...form,
+        project_price: parseFloat(form.project_price) || 0,
+        quantity: form.quantity === "" ? null : parseFloat(form.quantity),
+        item_id: form.item_id || null,
+        lead_creator_id: form.lead_creator_id || null,
+      });
       toast.success("Lead created");
       setOpen(false);
-      setForm({ name: "", phone: "", email: "", address: "", source: "", financing_required: false, project_price: "", lead_creator_id: "", remarks: "" });
+      setForm({ name: "", phone: "", email: "", address: "", source: "", financing_required: false, project_price: "", lead_creator_id: "", item_id: "", quantity: "", location_link: "", remarks: "" });
       load();
     } catch (e) { toast.error(apiError(e.response?.data?.detail)); }
   };
@@ -80,11 +93,21 @@ export default function Leads() {
                   </Select>
                 </div>
                 <div className="grid grid-cols-2 gap-3">
-                  <div><Label>Email</Label><Input value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} /></div>
+                  <div><Label>Email{mark("email")}</Label><Input value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} /></div>
                   <div><Label>Source</Label><Input value={form.source} onChange={(e) => setForm({ ...form, source: e.target.value })} /></div>
                 </div>
-                <div><Label>Address</Label><Input value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} /></div>
-                <div><Label>Project Price / Customer Agreed Price (₹)</Label><Input data-testid="lead-project-price-input" type="number" value={form.project_price} onChange={(e) => setForm({ ...form, project_price: e.target.value })} /></div>
+                <div><Label>Address{mark("address")}</Label><Input value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} /></div>
+                <div><Label>Item{mark("item")}</Label>
+                  <Select value={form.item_id} onValueChange={(v) => setForm({ ...form, item_id: v })}>
+                    <SelectTrigger data-testid="lead-item-select"><SelectValue placeholder="Select item" /></SelectTrigger>
+                    <SelectContent>{items.map((it) => <SelectItem key={it.id} value={it.id}>{it.name} ({it.unit})</SelectItem>)}</SelectContent>
+                  </Select>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div><Label>Quantity{mark("quantity")}</Label><Input data-testid="lead-quantity-input" type="number" value={form.quantity} onChange={(e) => setForm({ ...form, quantity: e.target.value })} /></div>
+                  <div><Label>Project Price (₹){mark("project_price")}</Label><Input data-testid="lead-project-price-input" type="number" value={form.project_price} onChange={(e) => setForm({ ...form, project_price: e.target.value })} /></div>
+                </div>
+                <div><Label>Location Link{mark("location_link")}</Label><Input data-testid="lead-location-input" placeholder="Google Maps link" value={form.location_link} onChange={(e) => setForm({ ...form, location_link: e.target.value })} /></div>
                 <div className="flex items-center gap-2">
                   <Checkbox id="fin" checked={form.financing_required} onCheckedChange={(v) => setForm({ ...form, financing_required: !!v })} data-testid="lead-financing-checkbox" />
                   <Label htmlFor="fin">Financing Required</Label>

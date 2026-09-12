@@ -12,7 +12,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Card } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { CheckCircle2, XCircle, CalendarClock, MapPin, AlertTriangle, RotateCcw } from "lucide-react";
+import { CheckCircle2, XCircle, CalendarClock, MapPin, AlertTriangle, RotateCcw, FileText, Pencil, TrendingUp } from "lucide-react";
 import { toast } from "sonner";
 
 const LOST_REASONS = ["PRICE", "COMPETITOR", "NOT_INTERESTED", "UNREACHABLE", "OTHER"];
@@ -29,6 +29,12 @@ export default function LeadDetail() {
   const [reassignDlg, setReassignDlg] = useState(false);
   const [leadUsers, setLeadUsers] = useState([]);
   const [reassignTo, setReassignTo] = useState("");
+  const [items, setItems] = useState([]);
+  const [commDlg, setCommDlg] = useState(false);
+  const [comm, setComm] = useState({ item_id: "", quantity: "", project_price: "" });
+  const [editDlg, setEditDlg] = useState(false);
+  const [editForm, setEditForm] = useState({ email: "", address: "", location_link: "" });
+  const [rejectRemarks, setRejectRemarks] = useState("");
 
   const load = () => api.get(`/leads/${id}`).then((r) => setData(r.data));
   useEffect(() => { load(); }, [id]);
@@ -36,6 +42,7 @@ export default function LeadDetail() {
     if (user.role === "MANAGER" || user.role === "OWNER") {
       api.get("/users/team/LEAD").then((r) => setLeadUsers(r.data)).catch(() => {});
     }
+    api.get("/items?active_only=true").then((r) => setItems(r.data)).catch(() => {});
   }, [user.role]);
   if (!data) return <div className="p-8 text-slate-500">Loading…</div>;
 
@@ -43,7 +50,13 @@ export default function LeadDetail() {
   const canAct = user.role === "LEAD" && lead.action_required;
   const canReopen = user.role === "OWNER" && lead.status === "LOST";
   const canReassign = (user.role === "MANAGER" || user.role === "OWNER") && lead.status !== "LOST";
-  const canEditPrice = (user.role === "LEAD" || user.role === "OWNER") && lead.status !== "LOST";
+  const isOwnerLead = user.role === "LEAD" && lead.lead_owner_id && lead.lead_owner_id === user.id;
+  const handedOff = !!lead.ecp_id;
+  const canEditPrice = (user.role === "LEAD" || user.role === "OWNER") && lead.status !== "LOST" && !handedOff;
+  const canEditLead = ((user.role === "LEAD" && (isOwnerLead || !lead.lead_owner_id)) || user.role === "OWNER") && lead.status !== "LOST";
+  const canCommercial = (isOwnerLead || (user.role === "LEAD" && !lead.lead_owner_id)) && lead.status !== "LOST";
+  const pcc = lead.pending_commercial_change;
+  const pccPending = pcc && pcc.status === "PENDING";
   const fmt = (n) => "₹" + Number(n || 0).toLocaleString("en-IN");
 
   const doReassign = async () => {
@@ -71,6 +84,47 @@ export default function LeadDetail() {
     catch (e) { toast.error(apiError(e.response?.data?.detail)); }
   };
 
+  const openEdit = () => { setEditForm({ email: lead.email || "", address: lead.address || "", location_link: lead.location_link || "" }); setEditDlg(true); };
+  const saveEdit = async () => {
+    try { await api.patch(`/leads/${id}`, editForm); toast.success("Lead updated"); setEditDlg(false); load(); }
+    catch (e) { toast.error(apiError(e.response?.data?.detail)); }
+  };
+
+  const openComm = () => { setComm({ item_id: lead.item_id || "", quantity: lead.quantity ?? "", project_price: lead.project_price ?? "" }); setCommDlg(true); };
+  const submitComm = async () => {
+    const payload = {};
+    if (comm.item_id && comm.item_id !== lead.item_id) payload.item_id = comm.item_id;
+    if (comm.quantity !== "" && parseFloat(comm.quantity) !== lead.quantity) payload.quantity = parseFloat(comm.quantity);
+    if (comm.project_price !== "" && parseFloat(comm.project_price) !== lead.project_price) payload.project_price = parseFloat(comm.project_price);
+    if (Object.keys(payload).length === 0) { toast.error("Change at least one value"); return; }
+    try { await api.post(`/leads/${id}/commercial-change`, payload); toast.success("Commercial change requested"); setCommDlg(false); load(); }
+    catch (e) { toast.error(apiError(e.response?.data?.detail)); }
+  };
+
+  const decideComm = async (approve) => {
+    if (!approve && !rejectRemarks.trim()) { toast.error("Rejection remarks are mandatory"); return; }
+    try {
+      await api.post(`/leads/${id}/commercial-change/${approve ? "approve" : "reject"}`, { remarks: rejectRemarks });
+      toast.success(approve ? "Change approved" : "Change rejected"); setRejectRemarks(""); load();
+    } catch (e) { toast.error(apiError(e.response?.data?.detail)); }
+  };
+
+  const downloadQuotation = async () => {
+    try {
+      const res = await api.get(`/leads/${id}/quotation`, { responseType: "blob" });
+      const blob = new Blob([res.data], { type: "application/pdf" });
+      const fname = `quotation_${lead.name.replace(/\s+/g, "_")}.pdf`;
+      const file = new File([blob], fname, { type: "application/pdf" });
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        try { await navigator.share({ files: [file], title: "Quotation", text: `Quotation for ${lead.name}` }); return; }
+        catch (_) { /* user cancelled → fall through to download */ }
+      }
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a"); a.href = url; a.download = fname; a.click();
+      window.URL.revokeObjectURL(url);
+    } catch (e) { toast.error(apiError(e.response?.data?.detail)); }
+  };
+
   const submit = () => {
     if (dlg === "YES") return doAction({ action: "YES" });
     if (dlg === "NO") return doAction({ action: "NO", lost_reason: f.lost_reason, lost_remarks: f.lost_remarks });
@@ -90,16 +144,26 @@ export default function LeadDetail() {
   return (
     <div>
       <PageHeader title={lead.name} subtitle={`${lead.phone} · ${lead.email || "no email"}`}
-        right={<Button variant="secondary" onClick={() => nav("/leads")}>Back</Button>} />
+        right={<div className="flex gap-2">
+          <Button data-testid="lead-quotation-btn" variant="secondary" onClick={downloadQuotation}><FileText size={16} className="mr-1.5" /> Quotation</Button>
+          <Button variant="secondary" onClick={() => nav("/leads")}>Back</Button>
+        </div>} />
       <div className="p-6 lg:p-8 grid lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 space-y-6">
           {/* highlight box */}
           <Card className="p-5">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-head font-semibold">Lead Details</h3>
+              {canEditLead && <Button data-testid="lead-edit-btn" size="sm" variant="outline" onClick={openEdit}><Pencil size={14} className="mr-1.5" /> Edit</Button>}
+            </div>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
               <Field label="Status"><StatusBadge value={lead.status} /></Field>
               <Field label="Current Team">{lead.current_team || "—"}</Field>
               <Field label="Action Required">{lead.action_required ? <span className="text-amber-600 font-semibold">YES</span> : "No"}</Field>
               <Field label="Financing">{lead.financing_required ? "Required" : "Not required"}</Field>
+              <Field label="Item">{lead.item_name ? `${lead.item_name} (${lead.item_unit})` : "—"}</Field>
+              <Field label="Quantity"><span data-testid="lead-quantity">{lead.quantity ?? "—"}</span></Field>
+              <Field label="Location">{lead.location_link ? <a href={lead.location_link} target="_blank" rel="noreferrer" className="text-sky-600 underline">Open map</a> : "—"}</Field>
               <Field label="Project Price">
                 <span data-testid="lead-project-price">{lead.project_price ? fmt(lead.project_price) : "—"}</span>
                 {canEditPrice && <button data-testid="lead-edit-price-btn" className="ml-2 text-xs text-sky-600 underline" onClick={() => { setPriceVal(lead.project_price || ""); setPriceDlg(true); }}>edit</button>}
@@ -142,6 +206,40 @@ export default function LeadDetail() {
                 <p className="text-sm text-slate-500">Current: <b>{lead.lead_owner_name || "—"}</b> · Creator: {lead.lead_creator_name || "—"}</p>
               </div>
               <Button data-testid="lead-reassign-button" variant="outline" onClick={() => { setReassignTo(""); setReassignDlg(true); }}>Reassign</Button>
+            </Card>
+          )}
+          {canCommercial && handedOff && !pccPending && (
+            <Card className="p-5 flex items-center justify-between" data-testid="commercial-request-card">
+              <div>
+                <h3 className="font-head font-semibold">Commercial Change</h3>
+                <p className="text-sm text-slate-500">Lead is handed off. Item, quantity & price changes need Owner approval.</p>
+              </div>
+              <Button data-testid="commercial-request-btn" variant="outline" onClick={openComm}><TrendingUp size={16} className="mr-1.5" /> Request Change</Button>
+            </Card>
+          )}
+          {pcc && (
+            <Card className="p-5" data-testid="commercial-change-card">
+              <div className="flex items-center gap-2 mb-3">
+                <h3 className="font-head font-semibold">Commercial Change</h3>
+                <StatusBadge value={pcc.status} />
+              </div>
+              <div className="text-sm text-slate-600 space-y-1">
+                <div>Requested by <b>{pcc.requested_by_name}</b></div>
+                <ChangeRow label="Item" cur={pcc.current.item_name} nxt={pcc.proposed.item_name} />
+                <ChangeRow label="Quantity" cur={pcc.current.quantity} nxt={pcc.proposed.quantity} />
+                <ChangeRow label="Project Price" cur={pcc.current.project_price} nxt={pcc.proposed.project_price} money fmt={fmt} />
+                {pcc.decision_remarks && <div className="mt-2">Decision remarks: <i>{pcc.decision_remarks}</i></div>}
+                {pcc.decided_by && <div className="text-xs text-slate-400">{pcc.status} by {pcc.decided_by}</div>}
+              </div>
+              {user.role === "OWNER" && pccPending && (
+                <div className="mt-4 space-y-3 border-t pt-4">
+                  <div><Label>Rejection Remarks (required to reject)</Label><Textarea data-testid="commercial-reject-remarks" value={rejectRemarks} onChange={(e) => setRejectRemarks(e.target.value)} /></div>
+                  <div className="flex gap-2">
+                    <Button data-testid="commercial-approve-btn" className="bg-emerald-600 hover:bg-emerald-700 text-white" onClick={() => decideComm(true)}>Approve</Button>
+                    <Button data-testid="commercial-reject-btn" className="bg-red-600 hover:bg-red-700 text-white" onClick={() => decideComm(false)}>Reject</Button>
+                  </div>
+                </div>
+              )}
             </Card>
           )}
           {ecp && (
@@ -217,8 +315,45 @@ export default function LeadDetail() {
           <DialogFooter><Button data-testid="reassign-submit" onClick={doReassign} className="bg-sky-600 hover:bg-sky-700">Reassign</Button></DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <Dialog open={editDlg} onOpenChange={setEditDlg}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Edit Lead</DialogTitle></DialogHeader>
+          {handedOff && <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2">This lead is handed off. Only contact details can be edited here — use a Commercial Change to modify item, quantity or price.</p>}
+          <div className="space-y-3">
+            <div><Label>Email</Label><Input data-testid="edit-email-input" value={editForm.email} onChange={(e) => setEditForm({ ...editForm, email: e.target.value })} /></div>
+            <div><Label>Address</Label><Input data-testid="edit-address-input" value={editForm.address} onChange={(e) => setEditForm({ ...editForm, address: e.target.value })} /></div>
+            <div><Label>Location Link</Label><Input data-testid="edit-location-input" value={editForm.location_link} onChange={(e) => setEditForm({ ...editForm, location_link: e.target.value })} /></div>
+          </div>
+          <DialogFooter><Button data-testid="edit-lead-save" onClick={saveEdit} className="bg-sky-600 hover:bg-sky-700">Save</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={commDlg} onOpenChange={setCommDlg}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Request Commercial Change</DialogTitle></DialogHeader>
+          <p className="text-sm text-slate-500">Proposed changes require Owner approval before they take effect.</p>
+          <div className="space-y-3">
+            <div><Label>Item</Label>
+              <Select value={comm.item_id} onValueChange={(v) => setComm({ ...comm, item_id: v })}>
+                <SelectTrigger data-testid="comm-item-select"><SelectValue placeholder="Select item" /></SelectTrigger>
+                <SelectContent>{items.map((it) => <SelectItem key={it.id} value={it.id}>{it.name} ({it.unit})</SelectItem>)}</SelectContent>
+              </Select>
+            </div>
+            <div><Label>Quantity</Label><Input data-testid="comm-quantity-input" type="number" value={comm.quantity} onChange={(e) => setComm({ ...comm, quantity: e.target.value })} /></div>
+            <div><Label>Project Price (₹)</Label><Input data-testid="comm-price-input" type="number" value={comm.project_price} onChange={(e) => setComm({ ...comm, project_price: e.target.value })} /></div>
+          </div>
+          <DialogFooter><Button data-testid="comm-submit" onClick={submitComm} className="bg-sky-600 hover:bg-sky-700">Submit for Approval</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
+}
+
+function ChangeRow({ label, cur, nxt, money, fmt }) {
+  if (nxt === undefined || nxt === null) return null;
+  const show = (v) => (v === undefined || v === null || v === "" ? "—" : money ? fmt(v) : v);
+  return <div><span className="text-slate-400">{label}:</span> <span className="line-through">{show(cur)}</span> → <b>{show(nxt)}</b></div>;
 }
 
 function Field({ label, children }) {

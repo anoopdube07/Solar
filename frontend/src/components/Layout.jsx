@@ -5,6 +5,7 @@ import { ROLE_LABELS } from "@/lib/constants";
 import {
   LayoutDashboard, Users2, Workflow, MapPin, AlertTriangle,
   Wallet, UserCog, Timer, LogOut, Sun, ClipboardList, Contact, Menu, X,
+  Package, SlidersHorizontal,
 } from "lucide-react";
 
 const NAV = {
@@ -17,6 +18,8 @@ const NAV = {
     ["/payments", "Payments", Wallet],
     ["/work-done", "Work Done", ClipboardList],
     ["/lead-employees", "Lead Employees", Contact],
+    ["/items", "Item Master", Package],
+    ["/lead-fields", "Lead Field Rules", SlidersHorizontal],
     ["/users", "Users", UserCog],
     ["/sla", "SLA Config", Timer],
   ],

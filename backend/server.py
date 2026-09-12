@@ -5,6 +5,7 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
 
 import os
+import io
 import uuid
 import logging
 from datetime import datetime, timezone, timedelta
@@ -224,6 +225,9 @@ class LeadCreate(BaseModel):
     financing_required: bool = False
     project_price: Optional[float] = 0
     lead_creator_id: Optional[str] = None
+    item_id: Optional[str] = None
+    quantity: Optional[float] = None
+    location_link: Optional[str] = ""
     remarks: Optional[str] = ""
 
 
@@ -278,6 +282,13 @@ async def create_lead(body: LeadCreate, user: dict = Depends(get_current_user)):
     dup = await db.leads.find_one({"phone": phone, "status": {"$ne": "LOST"}}, NO_ID)
     if dup:
         raise HTTPException(status_code=409, detail=f"An active lead already exists for {phone} ({dup['name']})")
+    item_name, item_unit = None, None
+    if body.item_id:
+        it = await db.items.find_one({"id": body.item_id}, NO_ID)
+        if not it or not it.get("active", True):
+            raise HTTPException(status_code=400, detail="Invalid or inactive item")
+        item_name, item_unit = it["name"], it["unit"]
+    await enforce_lead_mandatory(body, item_name)
     doc = {
         "id": new_id(),
         "name": body.name.strip(),
@@ -286,6 +297,11 @@ async def create_lead(body: LeadCreate, user: dict = Depends(get_current_user)):
         "address": (body.address or "").strip(),
         "source": (body.source or "").strip(),
         "remarks": (body.remarks or "").strip(),
+        "item_id": body.item_id,
+        "item_name": item_name,
+        "item_unit": item_unit,
+        "quantity": body.quantity,
+        "location_link": (body.location_link or "").strip(),
         "status": "PENDING",
         "current_team": "LEAD",
         "action_required": True,
@@ -362,10 +378,12 @@ async def set_project_price(lead_id: str, body: ProjectPriceBody, user: dict = D
     lead = await db.leads.find_one({"id": lead_id}, NO_ID)
     if not lead:
         raise HTTPException(status_code=404, detail="Lead not found")
+    if lead.get("ecp_id"):
+        raise HTTPException(status_code=400, detail="Lead already handed off. Use a Commercial Change request to modify price.")
+    if user["role"] == "LEAD" and lead.get("lead_owner_id") not in (user["id"], None):
+        raise HTTPException(status_code=403, detail="This lead is not assigned to you")
     price = float(body.project_price or 0)
     await db.leads.update_one({"id": lead_id}, {"$set": {"project_price": price, "updated_at": now_iso()}})
-    if lead.get("ecp_id"):
-        await db.ecps.update_one({"id": lead["ecp_id"]}, {"$set": {"project_price": price, "updated_at": now_iso()}})
     return await _lead_bundle(lead_id)
 
 
@@ -1133,6 +1151,7 @@ async def dashboard(user: dict = Depends(get_current_user)):
             "FIRST_PENDING": pay_count("FIRST", "PENDING"), "FIRST_CONFIRMED": pay_count("FIRST", "CONFIRMED"),
             "FINAL_PENDING": pay_count("FINAL", "PENDING"), "FINAL_CONFIRMED": pay_count("FINAL", "CONFIRMED"),
             "ADDITIONAL": len([p for p in payments if p["type"] == "ADDITIONAL"])}
+        data["pending_commercial"] = len([l for l in leads if (l.get("pending_commercial_change") or {}).get("status") == "PENDING"])
 
     elif role == "MANAGER":
         data["site_visits_to_assign"] = len([s for s in site_visits if s["status"] == "REQUESTED"])
@@ -1307,6 +1326,261 @@ async def export_projects(include_money: bool = False, user: dict = Depends(get_
     csv_data = to_csv(headers, rows)
     return Response(content=csv_data, media_type="text/csv",
                     headers={"Content-Disposition": "attachment; filename=projects.csv"})
+
+
+WORKFLOW_MANDATORY = {"name", "phone"}
+
+
+async def enforce_lead_mandatory(body, item_name):
+    cfg = await db.lead_field_config.find_one({"id": "singleton"}, NO_ID) or {}
+    fields = cfg.get("fields", {})
+    vals = {"email": body.email, "address": body.address, "location_link": body.location_link,
+            "quantity": body.quantity, "project_price": body.project_price, "item": item_name}
+    for fld, required in fields.items():
+        if not required:
+            continue
+        v = vals.get(fld)
+        if v in (None, "", 0):
+            raise HTTPException(status_code=400, detail=f"Field '{fld}' is required")
+
+
+# ---- Item Master ----
+class ItemBody(BaseModel):
+    name: str
+    unit: str
+
+
+@api.get("/items")
+async def list_items(active_only: bool = False, user: dict = Depends(get_current_user)):
+    q = {"active": True} if active_only else {}
+    return await db.items.find(q, NO_ID).sort("name", 1).to_list(2000)
+
+
+@api.post("/items")
+async def create_item(body: ItemBody, user: dict = Depends(get_current_user)):
+    require(user, "OWNER")
+    name, unit = body.name.strip(), body.unit.strip()
+    if not name or not unit:
+        raise HTTPException(status_code=400, detail="Name and unit are required")
+    if await db.items.find_one({"name": name, "unit": unit}):
+        raise HTTPException(status_code=409, detail="Item with this Name + Unit already exists")
+    doc = {"id": new_id(), "name": name, "unit": unit, "active": True, "created_at": now_iso()}
+    await db.items.insert_one(doc)
+    d = dict(doc); d.pop("_id", None)
+    return d
+
+
+@api.patch("/items/{item_id}")
+async def update_item(item_id: str, body: dict, user: dict = Depends(get_current_user)):
+    require(user, "OWNER")
+    it = await db.items.find_one({"id": item_id}, NO_ID)
+    if not it:
+        raise HTTPException(status_code=404, detail="Item not found")
+    upd = {}
+    if "name" in body or "unit" in body:
+        nm = (body.get("name") or it["name"]).strip(); un = (body.get("unit") or it["unit"]).strip()
+        other = await db.items.find_one({"name": nm, "unit": un, "id": {"$ne": item_id}})
+        if other:
+            raise HTTPException(status_code=409, detail="Another item with this Name + Unit exists")
+        upd["name"] = nm; upd["unit"] = un
+    if "active" in body:
+        upd["active"] = bool(body["active"])
+    await db.items.update_one({"id": item_id}, {"$set": upd})
+    return await db.items.find_one({"id": item_id}, NO_ID)
+
+
+@api.get("/items/export")
+async def export_items(user: dict = Depends(get_current_user)):
+    require(user, "OWNER")
+    items = await db.items.find({}, NO_ID).sort("name", 1).to_list(5000)
+    rows = [[i["name"], i["unit"], "active" if i.get("active", True) else "inactive"] for i in items]
+    return Response(content=to_csv(["Item Name", "Unit", "Status"], rows), media_type="text/csv",
+                    headers={"Content-Disposition": "attachment; filename=items.csv"})
+
+
+class ItemCSVBody(BaseModel):
+    rows: list  # list of {name, unit}
+
+
+@api.post("/items/import")
+async def import_items(body: ItemCSVBody, user: dict = Depends(get_current_user)):
+    require(user, "OWNER")
+    created, errors = 0, []
+    seen = set()
+    for idx, r in enumerate(body.rows, 1):
+        name = (r.get("name") or "").strip(); unit = (r.get("unit") or "").strip()
+        if not name or not unit:
+            errors.append(f"Row {idx}: missing name/unit"); continue
+        key = (name.lower(), unit.lower())
+        if key in seen:
+            errors.append(f"Row {idx}: duplicate in file ({name}+{unit})"); continue
+        seen.add(key)
+        if await db.items.find_one({"name": name, "unit": unit}):
+            errors.append(f"Row {idx}: already exists ({name}+{unit})"); continue
+        await db.items.insert_one({"id": new_id(), "name": name, "unit": unit, "active": True, "created_at": now_iso()})
+        created += 1
+    return {"created": created, "errors": errors}
+
+
+# ---- Lead mandatory-field config ----
+@api.get("/lead-field-config")
+async def get_field_config(user: dict = Depends(get_current_user)):
+    require(user, "OWNER", "LEAD", "MANAGER")
+    cfg = await db.lead_field_config.find_one({"id": "singleton"}, NO_ID)
+    return cfg or {"id": "singleton", "fields": {}}
+
+
+@api.put("/lead-field-config")
+async def set_field_config(body: dict, user: dict = Depends(get_current_user)):
+    require(user, "OWNER")
+    fields = {k: bool(v) for k, v in (body.get("fields") or {}).items()}
+    await db.lead_field_config.update_one({"id": "singleton"}, {"$set": {"id": "singleton", "fields": fields}}, upsert=True)
+    return {"id": "singleton", "fields": fields}
+
+
+# ---- Lead edit after handoff (non-commercial) ----
+class LeadEditBody(BaseModel):
+    email: Optional[str] = None
+    address: Optional[str] = None
+    location_link: Optional[str] = None
+    remarks: Optional[str] = None
+
+
+@api.patch("/leads/{lead_id}")
+async def edit_lead(lead_id: str, body: LeadEditBody, user: dict = Depends(get_current_user)):
+    require(user, "LEAD", "MANAGER", "OWNER")
+    lead = await db.leads.find_one({"id": lead_id}, NO_ID)
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    if user["role"] == "LEAD" and lead.get("lead_owner_id") not in (user["id"], None):
+        raise HTTPException(status_code=403, detail="This lead is not assigned to you")
+    upd = {k: (v.strip() if isinstance(v, str) else v) for k, v in body.dict().items() if v is not None}
+    if upd:
+        upd["updated_at"] = now_iso()
+        await db.leads.update_one({"id": lead_id}, {"$set": upd})
+        await log_activity(user, "Lead Edited", "LEAD", lead_id, lead["name"], ", ".join(upd.keys()))
+    return await _lead_bundle(lead_id)
+
+
+# ---- Commercial change approval ----
+class CommercialChange(BaseModel):
+    item_id: Optional[str] = None
+    quantity: Optional[float] = None
+    project_price: Optional[float] = None
+
+
+@api.post("/leads/{lead_id}/commercial-change")
+async def propose_commercial(lead_id: str, body: CommercialChange, user: dict = Depends(get_current_user)):
+    require(user, "LEAD")
+    lead = await db.leads.find_one({"id": lead_id}, NO_ID)
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    if lead.get("lead_owner_id") not in (user["id"], None):
+        raise HTTPException(status_code=403, detail="This lead is not assigned to you")
+    proposed = {}
+    if body.item_id is not None:
+        it = await db.items.find_one({"id": body.item_id}, NO_ID)
+        if not it or not it.get("active", True):
+            raise HTTPException(status_code=400, detail="Invalid or inactive item")
+        proposed["item_id"] = body.item_id; proposed["item_name"] = it["name"]; proposed["item_unit"] = it["unit"]
+    if body.quantity is not None:
+        proposed["quantity"] = body.quantity
+    if body.project_price is not None:
+        proposed["project_price"] = body.project_price
+    if not proposed:
+        raise HTTPException(status_code=400, detail="No commercial change proposed")
+    pcc = {"proposed": proposed,
+           "current": {"item_id": lead.get("item_id"), "item_name": lead.get("item_name"),
+                       "item_unit": lead.get("item_unit"), "quantity": lead.get("quantity"),
+                       "project_price": lead.get("project_price")},
+           "requested_by": user["id"], "requested_by_name": user["name"], "requested_at": now_iso(),
+           "status": "PENDING"}
+    await db.leads.update_one({"id": lead_id}, {"$set": {"pending_commercial_change": pcc, "updated_at": now_iso()}})
+    await log_activity(user, "Commercial Change Requested", "LEAD", lead_id, lead["name"], str(proposed))
+    return await _lead_bundle(lead_id)
+
+
+class CommercialDecision(BaseModel):
+    remarks: Optional[str] = None
+
+
+@api.post("/leads/{lead_id}/commercial-change/approve")
+async def approve_commercial(lead_id: str, body: CommercialDecision, user: dict = Depends(get_current_user)):
+    require(user, "OWNER")
+    lead = await db.leads.find_one({"id": lead_id}, NO_ID)
+    if not lead or not lead.get("pending_commercial_change") or lead["pending_commercial_change"].get("status") != "PENDING":
+        raise HTTPException(status_code=400, detail="No pending commercial change")
+    pcc = lead["pending_commercial_change"]
+    upd = dict(pcc["proposed"]); upd["updated_at"] = now_iso()
+    pcc.update({"status": "APPROVED", "decided_by": user["name"], "decided_at": now_iso(), "decision_remarks": (body.remarks or "")})
+    upd["pending_commercial_change"] = pcc
+    await db.leads.update_one({"id": lead_id}, {"$set": upd})
+    if lead.get("ecp_id") and "project_price" in pcc["proposed"]:
+        await db.ecps.update_one({"id": lead["ecp_id"]}, {"$set": {"project_price": pcc["proposed"]["project_price"]}})
+    await log_activity(user, "Commercial Change Approved", "LEAD", lead_id, lead["name"], str(pcc["proposed"]))
+    return await _lead_bundle(lead_id)
+
+
+@api.post("/leads/{lead_id}/commercial-change/reject")
+async def reject_commercial(lead_id: str, body: CommercialDecision, user: dict = Depends(get_current_user)):
+    require(user, "OWNER")
+    lead = await db.leads.find_one({"id": lead_id}, NO_ID)
+    if not lead or not lead.get("pending_commercial_change") or lead["pending_commercial_change"].get("status") != "PENDING":
+        raise HTTPException(status_code=400, detail="No pending commercial change")
+    if not (body.remarks or "").strip():
+        raise HTTPException(status_code=400, detail="Rejection remarks are mandatory")
+    pcc = lead["pending_commercial_change"]
+    pcc.update({"status": "REJECTED", "decided_by": user["name"], "decided_at": now_iso(), "decision_remarks": body.remarks.strip()})
+    await db.leads.update_one({"id": lead_id}, {"$set": {"pending_commercial_change": pcc}})
+    await log_activity(user, "Commercial Change Rejected", "LEAD", lead_id, lead["name"], body.remarks.strip())
+    return await _lead_bundle(lead_id)
+
+
+@api.get("/commercial-changes/pending")
+async def pending_commercial(user: dict = Depends(get_current_user)):
+    require(user, "OWNER")
+    leads = await db.leads.find({"pending_commercial_change.status": "PENDING"}, NO_ID).to_list(1000)
+    return leads
+
+
+# ---- Quotation PDF ----
+@api.get("/leads/{lead_id}/quotation")
+async def quotation_pdf(lead_id: str, user: dict = Depends(get_current_user)):
+    require(user, "LEAD", "MANAGER", "OWNER")
+    lead = await db.leads.find_one({"id": lead_id}, NO_ID)
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    if user["role"] == "LEAD" and lead.get("lead_owner_id") not in (user["id"], None):
+        raise HTTPException(status_code=403, detail="This lead is not assigned to you")
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.units import mm
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=A4)
+    w, h = A4
+    y = h - 30 * mm
+    c.setFont("Helvetica-Bold", 18); c.drawString(20 * mm, y, "Solar Energy Solutions")
+    c.setFont("Helvetica", 10); y -= 6 * mm; c.drawString(20 * mm, y, "Internal Quotation")
+    y -= 12 * mm; c.setFont("Helvetica-Bold", 12); c.drawString(20 * mm, y, f"Quotation — Lead {lead['id'][:8].upper()}")
+    c.setFont("Helvetica", 10)
+    lines = [
+        f"Date: {ist_today_str()}",
+        f"Customer: {lead.get('name','')}",
+        f"Mobile: {lead.get('phone','')}",
+        f"Address: {lead.get('address','') or '-'}",
+        f"Location: {lead.get('location_link','') or '-'}",
+        "",
+        f"Item: {lead.get('item_name','-') or '-'}",
+        f"Quantity: {lead.get('quantity','-')} {lead.get('item_unit','') or ''}",
+        f"Agreed / Project Price: Rs. {lead.get('project_price',0):,.0f}",
+    ]
+    for ln in lines:
+        y -= 8 * mm; c.drawString(20 * mm, y, ln)
+    y -= 16 * mm; c.setFont("Helvetica-Oblique", 8)
+    c.drawString(20 * mm, y, "This is a system-generated quotation for internal use.")
+    c.showPage(); c.save(); buf.seek(0)
+    return Response(content=buf.read(), media_type="application/pdf",
+                    headers={"Content-Disposition": f"attachment; filename=quotation_{lead['id'][:8]}.pdf"})
 
 
 app.include_router(api)

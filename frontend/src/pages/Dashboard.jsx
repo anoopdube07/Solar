@@ -13,10 +13,14 @@ export default function Dashboard() {
   const { user } = useAuth();
   const nav = useNavigate();
   const [d, setD] = useState(null);
+  const [pendingComm, setPendingComm] = useState([]);
   const [exportDlg, setExportDlg] = useState(false);
   const [inclMoney, setInclMoney] = useState(false);
 
   useEffect(() => { api.get("/dashboard").then((r) => setD(r.data)); }, []);
+  useEffect(() => {
+    if (user.role === "OWNER") api.get("/commercial-changes/pending").then((r) => setPendingComm(r.data)).catch(() => {});
+  }, [user.role]);
   if (!d) return <div className="p-8 text-slate-500">Loading…</div>;
 
   const go = (path) => () => nav(path);
@@ -134,6 +138,15 @@ export default function Dashboard() {
           </Dialog>
         )} />
       <div className="p-6 lg:p-8 space-y-8">
+        {user.role === "OWNER" && pendingComm.length > 0 && (
+          <div data-testid="pending-commercial-banner" className="rounded-lg border border-amber-300 bg-amber-50 px-5 py-4 flex items-center justify-between">
+            <div>
+              <div className="font-head font-bold text-amber-800">{pendingComm.length} Commercial Change{pendingComm.length > 1 ? "s" : ""} awaiting your approval</div>
+              <div className="text-sm text-amber-700 mt-0.5">{pendingComm.map((l) => l.name).slice(0, 4).join(", ")}{pendingComm.length > 4 ? "…" : ""}</div>
+            </div>
+            <Button data-testid="pending-commercial-review" className="bg-amber-600 hover:bg-amber-700 text-white" onClick={() => nav(`/leads/${pendingComm[0].id}`)}>Review</Button>
+          </div>
+        )}
         {sections.map(([title, cards]) => (
           <div key={title}>
             <h2 className="font-head text-lg font-bold text-slate-800 mb-3">{title}</h2>
