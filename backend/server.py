@@ -1350,10 +1350,29 @@ class ItemBody(BaseModel):
     unit: str
 
 
+async def _referenced_item_ids():
+    ref = set()
+    leads = await db.leads.find({}, {"item_id": 1, "pending_commercial_change": 1, "_id": 0}).to_list(20000)
+    for l in leads:
+        if l.get("item_id"):
+            ref.add(l["item_id"])
+        pcc = l.get("pending_commercial_change") or {}
+        for side in ("proposed", "current"):
+            iid = (pcc.get(side) or {}).get("item_id")
+            if iid:
+                ref.add(iid)
+    return ref
+
+
 @api.get("/items")
 async def list_items(active_only: bool = False, user: dict = Depends(get_current_user)):
     q = {"active": True} if active_only else {}
-    return await db.items.find(q, NO_ID).sort("name", 1).to_list(2000)
+    items = await db.items.find(q, NO_ID).sort("name", 1).to_list(2000)
+    ref = await _referenced_item_ids()
+    for it in items:
+        it["referenced"] = it["id"] in ref
+        it["deletable"] = it["id"] not in ref
+    return items
 
 
 @api.post("/items")
@@ -1387,6 +1406,19 @@ async def update_item(item_id: str, body: dict, user: dict = Depends(get_current
         upd["active"] = bool(body["active"])
     await db.items.update_one({"id": item_id}, {"$set": upd})
     return await db.items.find_one({"id": item_id}, NO_ID)
+
+
+@api.delete("/items/{item_id}")
+async def delete_item(item_id: str, user: dict = Depends(get_current_user)):
+    require(user, "OWNER")
+    it = await db.items.find_one({"id": item_id}, NO_ID)
+    if not it:
+        raise HTTPException(status_code=404, detail="Item not found")
+    ref = await _referenced_item_ids()
+    if item_id in ref:
+        raise HTTPException(status_code=409, detail="This item is already used in existing records and cannot be deleted. You can deactivate it instead.")
+    await db.items.delete_one({"id": item_id})
+    return {"deleted": True}
 
 
 @api.get("/items/export")

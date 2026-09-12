@@ -4,8 +4,8 @@
 Internal employee web app for a solar company so the OWNER can see the status of every Lead and ECP project — where it is, which team/person owns the next action, and which projects are stuck/delayed. Two separate workflows: Lead Qualification and ECP Execution. Full finalized business spec: `/app/memory/PHASE1_SPEC.md`.
 
 ## Architecture
-- Backend: FastAPI (`/app/backend/server.py`, `auth.py`, `workflow.py`, `extras.py`), MongoDB (UUID string ids), JWT username+password auth (Bearer token in login body, stored in localStorage).
-- Frontend: React + Tailwind + shadcn/ui; role-based sidebar layout; sonner toasts. Design tokens from `/app/design_guidelines.json`.
+- Backend: FastAPI (`/app/backend/server.py`, `auth.py`, `workflow.py`, `extras.py`), MongoDB (UUID string ids), JWT username+password auth (Bearer token in login body, stored in localStorage as `ecp_token`).
+- Frontend: React + Tailwind + shadcn/ui; role-based sidebar layout; sonner toasts. AuthContext bootstraps via `/api/auth/me`.
 - PDF: ReportLab (quotation generation).
 
 ## User Personas / Roles (V1: one user = one role = one team)
@@ -20,31 +20,32 @@ OWNER, MANAGER (Process Owner), LEAD, REGISTRATION, ACCOUNTS, DISPATCH, INSTALLA
 - SLA per stage (0 = never delayed). RBAC per role; only Owner manages users, SLA, reopens LOST.
 
 ## Implemented Phases (summary)
-- Phase 1 (2026-09-06): full auth, lead + ECP workflows, site visits, escalations, payments, dashboards, users, SLA. 20/20 backend pass.
-- Issues 1-6: role-aware filters, dispatch derived-status filters, manager install assignment, site-visit installer dropdown, lead project price → ECP, accounts payments page. 48/48 pass.
-- Issues 7-19: Lead Employee master, lead_creator snapshots, filters + drilldowns, IST follow-up, phone required, work-done report, owner CSV export, mobile drawer. 76/77 pass (payment_monitor lead_creator_name fixed via API).
-- Master Spec Phase 1: new roles (INSTALLATION_MANAGER/MEMBER, COMPLAINT), lead_owner + ownership scoping + reassign, duplicate-phone 409, payment future-date reject, Subsequent folding.
+- Phase 1: full auth, lead + ECP workflows, site visits, escalations, payments, dashboards, users, SLA.
+- Issues 1-6: role-aware filters, dispatch derived-status filters, manager install assignment, site-visit installer dropdown, lead project price → ECP, accounts payments page.
+- Issues 7-19: Lead Employee master, lead_creator snapshots, filters + drilldowns, IST follow-up, phone required, work-done report, owner CSV export, mobile drawer.
+- Master Spec Phase 1: new roles, lead_owner + ownership scoping + reassign, duplicate-phone 409, payment future-date reject, Subsequent folding.
 
 ## Master Spec Phase 2 — DONE & verified (2026-09-12)
-- **Item Master** (Owner-only): `/api/items` list/create/patch(active toggle), `/api/items/export` CSV, `/api/items/import` CSV (dup key = normalized Name+Unit; in-file + existing dup rows skipped/reported). Frontend `/items` page.
-- **Lead item fields**: `item_id` + snapshot `item_name`/`item_unit`, `quantity`, `location_link` (+ existing `project_price`). Server validates item is active/exists (400 otherwise). Fields on Lead create form (active-item dropdown) + shown on Lead detail.
-- **Owner-configurable mandatory fields**: `/api/lead-field-config` (Owner PUT; LEAD/MANAGER/OWNER GET). Toggleable: email, address, location_link, item, quantity, project_price. Name & Phone always mandatory (workflow-integrity). Backend `enforce_lead_mandatory` enforces server-side (400) independent of UI. Owner page `/lead-fields`.
-- **Post-handoff Lead editing**: `PATCH /api/leads/{id}` (LEAD owner / OWNER) for non-commercial fields (email/address/location_link). Direct `project-price` POST now returns 400 once handed off (ecp_id present).
-- **Commercial change approval**: `POST /api/leads/{id}/commercial-change` (LEAD owner) proposes item/quantity/project_price → pending_commercial_change (PENDING). Owner approve/reject (`/approve`, `/reject`); reject remarks mandatory (400 if missing). Approve applies proposed values to lead + syncs ECP project_price. Owner dashboard banner + `pending_commercial` count. RBAC enforced (non-owner approve/reject/pending → 403).
-- **Quotation PDF**: `GET /api/leads/{id}/quotation` (LEAD owner / MANAGER / OWNER; non-owner LEAD → 403) → application/pdf. Frontend button uses Web Share API with download fallback.
-- Verified: new `/app/backend/tests/test_phase2.py` 25/25 PASS + Playwright UI smoke. No Phase 2 functional bugs (iteration_5.json).
+- **Item Master** (Owner-only): `/api/items` list/create/patch(active toggle)/**delete**, `/api/items/export` + `/api/items/import` CSV (dup key = normalized Name+Unit). Frontend `/items` page with ACTIVE/INACTIVE badges, "In use" marker, Edit / Deactivate / Delete.
+  - **Delete data-integrity**: `DELETE /api/items/{id}` Owner-only; blocked (409, "used in existing records… deactivate instead") if the item is referenced by any lead `item_id` or by a `pending_commercial_change` (proposed/current). List response includes `referenced`/`deletable` flags; UI disables delete for non-deletable items.
+  - Deactivated items: excluded from `active_only` list, rejected on new lead creation (400 "Invalid or inactive item"), historical leads keep `item_name`/`item_unit` snapshot so records still display.
+- **Lead item fields**: `item_id` + snapshot `item_name`/`item_unit`, `quantity`, `location_link` (+ existing `project_price`). Server validates item active/exists.
+- **Owner-configurable mandatory fields**: `/api/lead-field-config`. Toggleable: email, address, location_link, item, quantity, project_price. Name & Phone always mandatory. Server-side `enforce_lead_mandatory` (400). Owner page `/lead-fields`.
+- **Post-handoff Lead editing**: `PATCH /api/leads/{id}` (LEAD owner / OWNER) for non-commercial fields. Direct `project-price` POST returns 400 once handed off.
+- **Commercial change approval**: propose (LEAD owner) → Owner approve/reject; reject remarks mandatory. Approve applies to lead + syncs ECP price. Owner dashboard banner + `pending_commercial` count. RBAC enforced.
+- **Quotation PDF**: `GET /api/leads/{id}/quotation` (LEAD owner / MANAGER / OWNER; non-owner LEAD → 403). Frontend Web Share + download fallback.
+- Verified: `/app/backend/tests/test_phase2.py` 25/25 PASS (iteration_5.json) + Playwright UI smoke. Item DELETE additions re-verified via curl (owner delete unused 200, non-owner 403, referenced 409, deactivated-selection 400).
 
-## REMAINING PHASES (pending, in order)
-- P3 Documents: object-storage integration + YES→PENDING_DOCUMENTS gate before Registration 1. (needs object storage playbook)
-- P4 Registration 1 rework (Consumer Request; Vendor Acceptance; conditional loan tasks) + task-set versioning; Registration 2 + conditional Bank Submission; CSPDCL/DCR/NM sequencing.
-- P5 Dispatch financial-field stripping + Delivery Challan (finalize→Accounts).
-- P6 Installation Manager→Member assignment, 5 mandatory photos, submit→manager acceptance/rework, Registration photo access.
-- P7 Site Visit structured survey + ≤3 geo photos + extra materials.
-- P8 Complaint module (categories master, priority, SLA cat+priority, assignment routing, RESOLVED→CLOSED, dashboards, attachments, RBAC).
-- P9 Mobile passes on new screens. P10 Full regression + automated suites + direct-API security tests.
+## REMAINING PHASES (pending, in order) — DO NOT START P3 UNTIL PHASE 2 USER-VERIFIED
+- P3 Documents: object-storage integration + YES→PENDING_DOCUMENTS gate before Registration 1.
+- P4 Registration 1/2 rework + task-set versioning + CSPDCL/DCR/NM sequencing.
+- P5 Dispatch financial-field stripping + Delivery Challan (finalize→Accounts). NOTE: challans will reference items → include in item reference-check when built.
+- P6 Installation Manager→Member assignment, 5 mandatory photos, submit→acceptance/rework.
+- P7 Site Visit structured survey + geo photos + extra materials. NOTE: extra-materials will reference items → include in reference-check.
+- P8 Complaint module. P9 Mobile passes. P10 Full regression + security tests.
 
 ## Known test hygiene note
-Legacy Phase-1 pytest files (backend_test.py, test_issues_*.py, test_audit_spec.py) use hardcoded phone numbers that now collide with duplicate-active-phone 409 (correct app behaviour). Refactor to uuid-based phones like test_phase2.py if re-running the legacy regression suite.
+Legacy Phase-1 pytest files use hardcoded phones that now collide with duplicate-active-phone 409 (correct behaviour). Refactor to uuid-based phones like test_phase2.py if re-running that suite.
 
 ## Next Tasks
-- Await user verification of Phase 2, then start Phase 3 (Documents / object storage) — fetch object-storage playbook via integration_expert.
+- Await user verification of Phase 2 (incl. Item delete rules), then start Phase 3 (Documents / object storage) — fetch object-storage playbook via integration_expert.
