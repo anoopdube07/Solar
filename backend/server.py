@@ -259,6 +259,8 @@ async def list_leads(status: Optional[str] = None, followup: Optional[str] = Non
         q["id"] = {"$in": lead_ids}
         q["status"] = "FOLLOW_UP"
     leads = await db.leads.find(q, NO_ID).sort("created_at", -1).to_list(2000)
+    if user["role"] == "LEAD":
+        leads = [l for l in leads if l.get("lead_owner_id") in (user["id"], None)]
     return leads
 
 
@@ -271,10 +273,15 @@ async def create_lead(body: LeadCreate, user: dict = Depends(get_current_user)):
         if not emp or not emp.get("active", True):
             raise HTTPException(status_code=400, detail="Invalid or inactive Lead Creator")
         creator_id, creator_name = emp["id"], emp["name"]
+    # Duplicate active-lead check (server-side): ACTIVE = any status except LOST
+    phone = body.phone.strip()
+    dup = await db.leads.find_one({"phone": phone, "status": {"$ne": "LOST"}}, NO_ID)
+    if dup:
+        raise HTTPException(status_code=409, detail=f"An active lead already exists for {phone} ({dup['name']})")
     doc = {
         "id": new_id(),
         "name": body.name.strip(),
-        "phone": body.phone.strip(),
+        "phone": phone,
         "email": (body.email or "").strip(),
         "address": (body.address or "").strip(),
         "source": (body.source or "").strip(),
@@ -287,6 +294,8 @@ async def create_lead(body: LeadCreate, user: dict = Depends(get_current_user)):
         "project_price": float(body.project_price or 0),
         "lead_creator_id": creator_id,
         "lead_creator_name": creator_name,
+        "lead_owner_id": user["id"],
+        "lead_owner_name": user["name"],
         "lost_reason": None,
         "lost_remarks": None,
         "ecp_id": None,
@@ -318,6 +327,32 @@ async def _lead_bundle(lead_id: str):
 
 @api.get("/leads/{lead_id}")
 async def get_lead(lead_id: str, user: dict = Depends(get_current_user)):
+    require(user, "OWNER", "MANAGER", "LEAD")
+    lead = await db.leads.find_one({"id": lead_id}, NO_ID)
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    if user["role"] == "LEAD" and lead.get("lead_owner_id") not in (user["id"], None):
+        raise HTTPException(status_code=403, detail="This lead is not assigned to you")
+    return await _lead_bundle(lead_id)
+
+
+class ReassignLead(BaseModel):
+    assigned_user: str
+
+
+@api.post("/leads/{lead_id}/reassign")
+async def reassign_lead(lead_id: str, body: ReassignLead, user: dict = Depends(get_current_user)):
+    require(user, "MANAGER", "OWNER")
+    lead = await db.leads.find_one({"id": lead_id}, NO_ID)
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    emp = await db.users.find_one({"id": body.assigned_user}, NO_ID)
+    if not emp or emp["role"] != "LEAD" or not emp.get("active", True):
+        raise HTTPException(status_code=400, detail="Assignee must be an active Lead Team user")
+    prev = lead.get("lead_owner_name") or "—"
+    await db.leads.update_one({"id": lead_id}, {"$set": {
+        "lead_owner_id": emp["id"], "lead_owner_name": emp["name"], "updated_at": now_iso()}})
+    await log_activity(user, "Lead Reassigned", "LEAD", lead_id, lead["name"], f"{prev} → {emp['name']}")
     return await _lead_bundle(lead_id)
 
 
@@ -345,6 +380,8 @@ async def create_ecp_from_lead(lead: dict, user: dict):
         "project_price": float(lead.get("project_price") or 0),
         "lead_creator_id": lead.get("lead_creator_id"),
         "lead_creator_name": lead.get("lead_creator_name"),
+        "lead_owner_id": lead.get("lead_owner_id"),
+        "lead_owner_name": lead.get("lead_owner_name"),
         "current_stage": "REGISTRATION_1",
         "current_team": wf.STAGE_TEAM["REGISTRATION_1"],
         "responsible_user": None,
@@ -393,6 +430,8 @@ async def lead_action(lead_id: str, body: LeadAction, user: dict = Depends(get_c
     lead = await db.leads.find_one({"id": lead_id}, NO_ID)
     if not lead:
         raise HTTPException(status_code=404, detail="Lead not found")
+    if lead.get("lead_owner_id") not in (user["id"], None):
+        raise HTTPException(status_code=403, detail="This lead is not assigned to you")
     if lead["status"] in ("QUALIFIED", "LOST") and not lead.get("action_required"):
         raise HTTPException(status_code=400, detail="Lead is not currently actionable")
     action = body.action
@@ -954,6 +993,8 @@ async def create_payment(body: PaymentCreate, user: dict = Depends(get_current_u
         exists = await db.payments.find_one({"ecp_id": body.ecp_id, "type": body.type})
         if exists:
             raise HTTPException(status_code=400, detail=f"{body.type} payment already exists for this ECP")
+    if (body.date or "")[:10] > ist_today_str():
+        raise HTTPException(status_code=400, detail="Payment date cannot be in the future")
     doc = {
         "id": new_id(), "ecp_id": body.ecp_id, "type": body.type, "amount": float(body.amount),
         "date": body.date, "status": body.status, "remarks": (body.remarks or "").strip(),
@@ -977,6 +1018,8 @@ async def update_payment(payment_id: str, body: PaymentUpdate, user: dict = Depe
     if body.amount is not None:
         upd["amount"] = float(body.amount)
     if body.date is not None:
+        if (body.date or "")[:10] > ist_today_str():
+            raise HTTPException(status_code=400, detail="Payment date cannot be in the future")
         upd["date"] = body.date
     if body.status is not None:
         if body.status not in ("PENDING", "CONFIRMED"):
@@ -1001,7 +1044,7 @@ def _ecp_receivable(ecp: dict, ecp_payments: list):
     first_confirmed = any(p["type"] == "FIRST" and p["status"] == "CONFIRMED" for p in ecp_payments)
     return {
         "project_price": price, "first_confirmed_amount": first_conf,
-        "subsequent_confirmed_amount": sub_conf, "final_confirmed_amount": final_conf,
+        "subsequent_confirmed_amount": sub_conf + final_conf, "final_confirmed_amount": final_conf,
         "total_received": total_conf, "total_receivable": receivable,
         "first_payment_confirmed": first_confirmed,
     }

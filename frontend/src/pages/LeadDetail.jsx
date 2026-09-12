@@ -26,16 +26,31 @@ export default function LeadDetail() {
   const [f, setF] = useState({});
   const [priceDlg, setPriceDlg] = useState(false);
   const [priceVal, setPriceVal] = useState("");
+  const [reassignDlg, setReassignDlg] = useState(false);
+  const [leadUsers, setLeadUsers] = useState([]);
+  const [reassignTo, setReassignTo] = useState("");
 
   const load = () => api.get(`/leads/${id}`).then((r) => setData(r.data));
   useEffect(() => { load(); }, [id]);
+  useEffect(() => {
+    if (user.role === "MANAGER" || user.role === "OWNER") {
+      api.get("/users/team/LEAD").then((r) => setLeadUsers(r.data)).catch(() => {});
+    }
+  }, [user.role]);
   if (!data) return <div className="p-8 text-slate-500">Loading…</div>;
 
   const { lead, followups, site_visits, escalations, ecp } = data;
   const canAct = user.role === "LEAD" && lead.action_required;
   const canReopen = user.role === "OWNER" && lead.status === "LOST";
+  const canReassign = (user.role === "MANAGER" || user.role === "OWNER") && lead.status !== "LOST";
   const canEditPrice = (user.role === "LEAD" || user.role === "OWNER") && lead.status !== "LOST";
   const fmt = (n) => "₹" + Number(n || 0).toLocaleString("en-IN");
+
+  const doReassign = async () => {
+    if (!reassignTo) { toast.error("Select a Lead Team user"); return; }
+    try { await api.post(`/leads/${id}/reassign`, { assigned_user: reassignTo }); toast.success("Lead reassigned"); setReassignDlg(false); setReassignTo(""); load(); }
+    catch (e) { toast.error(apiError(e.response?.data?.detail)); }
+  };
 
   const doAction = async (payload) => {
     try {
@@ -120,6 +135,15 @@ export default function LeadDetail() {
               <Button data-testid="lead-reopen-button" variant="outline" onClick={reopen}><RotateCcw size={16} className="mr-1.5" /> Reopen Lost Lead</Button>
             </Card>
           )}
+          {canReassign && (
+            <Card className="p-5 flex items-center justify-between">
+              <div>
+                <h3 className="font-head font-semibold">Lead Owner</h3>
+                <p className="text-sm text-slate-500">Current: <b>{lead.lead_owner_name || "—"}</b> · Creator: {lead.lead_creator_name || "—"}</p>
+              </div>
+              <Button data-testid="lead-reassign-button" variant="outline" onClick={() => { setReassignTo(""); setReassignDlg(true); }}>Reassign</Button>
+            </Card>
+          )}
           {ecp && (
             <Card className="p-5">
               <div className="flex items-center justify-between">
@@ -178,6 +202,19 @@ export default function LeadDetail() {
           <DialogHeader><DialogTitle>Project Price / Customer Agreed Price</DialogTitle></DialogHeader>
           <div><Label>Amount (₹)</Label><Input data-testid="lead-price-input" type="number" value={priceVal} onChange={(e) => setPriceVal(e.target.value)} /></div>
           <DialogFooter><Button data-testid="lead-price-save" onClick={savePrice} className="bg-sky-600 hover:bg-sky-700">Save</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={reassignDlg} onOpenChange={setReassignDlg}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Reassign Lead Owner</DialogTitle></DialogHeader>
+          <div><Label>Lead Team User *</Label>
+            <Select value={reassignTo} onValueChange={setReassignTo}>
+              <SelectTrigger data-testid="reassign-user-select"><SelectValue placeholder="Select user" /></SelectTrigger>
+              <SelectContent>{leadUsers.map((u) => <SelectItem key={u.id} value={u.id}>{u.name}</SelectItem>)}</SelectContent>
+            </Select>
+          </div>
+          <DialogFooter><Button data-testid="reassign-submit" onClick={doReassign} className="bg-sky-600 hover:bg-sky-700">Reassign</Button></DialogFooter>
         </DialogContent>
       </Dialog>
     </div>

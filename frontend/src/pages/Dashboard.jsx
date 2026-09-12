@@ -88,8 +88,6 @@ export default function Dashboard() {
     const fmt = (n) => "₹" + Number(n || 0).toLocaleString("en-IN");
     sections.push(["Receivables", [
       ["First Payment Pending", `${d.first_payment_pending_count} Projects`, "amber", go("/payments?view=first_pending")],
-      ["Subsequent Payment Follow-up", `${d.subsequent_followup_count} Projects`, "sky", go("/payments?view=subsequent")],
-      ["Subsequent Amount Pending", fmt(d.subsequent_amount_pending), "indigo", go("/payments?view=subsequent")],
       ["Total Receivable", fmt(d.total_receivable), "red", go("/payments?view=receivable")],
     ]]);
   } else if (user.role === "DISPATCH") {

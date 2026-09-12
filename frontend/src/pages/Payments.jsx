@@ -144,7 +144,7 @@ export default function Payments() {
                 {detail.payments.length === 0 && <TableRow><TableCell colSpan={5} className="text-slate-400 py-4 text-sm">No payments yet.</TableCell></TableRow>}
                 {detail.payments.map((p) => (
                   <TableRow key={p.id}>
-                    <TableCell className="font-semibold">{p.type === "ADDITIONAL" ? "Subsequent" : p.type === "FIRST" ? "First" : "Final"}</TableCell>
+                    <TableCell className="font-semibold">{p.type === "FIRST" ? "First" : "Subsequent"}</TableCell>
                     <TableCell className="text-right font-mono">{fmt(p.amount)}</TableCell>
                     <TableCell>{p.date?.slice(0, 10)}</TableCell>
                     <TableCell><StatusBadge value={p.status} kind={p.status === "CONFIRMED" ? "CONFIRMED" : "PENDING"} label={p.status} /></TableCell>

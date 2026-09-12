@@ -1,7 +1,8 @@
 """Business workflow constants for ECP Project Management & Lead Tracking (Phase 1 spec)."""
 
 # ---- Roles / Teams (V1: one user = one role = one team) ----
-ROLES = ["OWNER", "MANAGER", "LEAD", "REGISTRATION", "ACCOUNTS", "DISPATCH", "INSTALLATION"]
+ROLES = ["OWNER", "MANAGER", "LEAD", "REGISTRATION", "ACCOUNTS", "DISPATCH", "INSTALLATION",
+         "INSTALLATION_MANAGER", "INSTALLATION_MEMBER", "COMPLAINT"]
 
 ROLE_LABELS = {
     "OWNER": "Owner",
@@ -11,6 +12,9 @@ ROLE_LABELS = {
     "ACCOUNTS": "Accounts Team",
     "DISPATCH": "Dispatch Team",
     "INSTALLATION": "Installation Team",
+    "INSTALLATION_MANAGER": "Installation Team Manager",
+    "INSTALLATION_MEMBER": "Installation Team Member",
+    "COMPLAINT": "Complaint Registration Team",
 }
 
 # ---- ECP stages (ordered) ----

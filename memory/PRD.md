@@ -54,5 +54,26 @@ OWNER, MANAGER (Process Owner), LEAD, REGISTRATION, ACCOUNTS, DISPATCH, INSTALLA
 - New: `extras.py` (IST helpers, CSV). Schema additive: users.phone, leads/ecps.lead_creator_*, collections `lead_employees`, `activities`.
 - Verified: 77 backend cases (76 pass; the 1 failure — payment_monitor missing lead_creator_name — was then FIXED and re-verified via API). Frontend smoke incl. mobile drawer all pass. No Phase 1 / Issues 1-6 regressions.
 
+## Master Spec — phased delivery (2026-09-06)
+DECISIONS LOCKED: YES→ECP held PENDING_DOCUMENTS; Installation Manager→Member; Site Visit performed by Installation Members (confirmed); Item dup key = Name+Unit; commercial-reject remarks mandatory; app finalizes Delivery Challan (Accounts invoices outside); no partial dispatch V1; complaints RESOLVED→(manager)→CLOSED, priority LOW/MED/HIGH/CRITICAL, SLA by category+priority (IST), category master owner-managed, assignment Registration→team→Manager→member, complaint allowed w/o ECP, attachments JPG/PNG/PDF.
+
+### Phase 1 DONE & verified (roles + lead security + payments)
+- New roles added: INSTALLATION_MANAGER, INSTALLATION_MEMBER, COMPLAINT (INSTALLATION kept for back-compat; ECP stage logic still uses INSTALLATION team until Phase 6 rewires it).
+- Lead: `lead_owner_id/name` (default = creator's login user), server-side ownership scoping (LEAD sees/acts only on own leads; `get_lead` guarded), `POST /leads/{id}/reassign` (Manager/Owner) with immediate access revocation + activity log. Reassign UI on Lead detail.
+- Duplicate active-lead check on phone (ACTIVE = any status except LOST) → 409.
+- Payments: future-date (IST) rejected on create+update; FINAL+ADDITIONAL folded into "Subsequent" for display (`subsequent_confirmed_amount = ADDITIONAL+FINAL`); historical records untouched.
+- Accounts dashboard UI trimmed to First Payment Pending (count) + Total Receivable (subsequent counters hidden).
+- Verified via API: 409 duplicate, 403 LEAD reassign, 403/200 reassign revocation, 400 future-date, dashboards + Registration filter intact.
+
+### REMAINING PHASES (pending, in order)
+- P2 Lead: item fields + Item Master (Name+Unit dup, CSV import/export), owner-config mandatory fields, edit-after-handoff + commercial-change approval, quotation PDF. (needs PDF lib)
+- P3 Documents: object-storage integration + YES→PENDING_DOCUMENTS gate before Registration 1. (needs object storage)
+- P4 Registration 1 rework (Consumer Request; Vendor Acceptance=CVA Print&Sign+Feasibility Upload; conditional loan tasks) + task-set versioning; Registration 2 + conditional Bank Submission 2nd; CSPDCL/DCR/Consumer-Approval/NM-request + NM sequencing.
+- P5 Dispatch financial-field stripping + Delivery Challan (finalize→Accounts).
+- P6 Installation Manager→Member assignment, 5 mandatory photos, submit→manager acceptance/rework, Registration photo access.
+- P7 Site Visit structured survey (heights/cables/name) + ≤3 geo photos + extra materials.
+- P8 Complaint module (categories master, priority, SLA cat+priority, assignment routing, RESOLVED→CLOSED, dashboards, attachments, RBAC).
+- P9 Mobile passes on new screens. P10 Full regression + new automated test suites + direct-API security tests.
+
 ## Next Tasks
-- Await user feedback.
+- Build Phase 2 (Item Master + lead item fields + commercial-change approval + quotation) next; fetch object-storage & PDF playbooks when P2/P3 reached.

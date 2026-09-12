@@ -80,7 +80,7 @@ export default function ECPDetail() {
   const finalConf = payments.filter((p) => p.type === "FINAL" && p.status === "CONFIRMED").reduce((a, p) => a + p.amount, 0);
   const totalReceived = firstConf + subConf + finalConf;
   const receivable = Math.max((ecp.project_price || 0) - totalReceived, 0);
-  const typeLabel = (t) => (t === "ADDITIONAL" ? "Subsequent" : t === "FIRST" ? "First" : "Final");
+  const typeLabel = (t) => (t === "FIRST" ? "First" : "Subsequent");
 
   return (
     <div>
