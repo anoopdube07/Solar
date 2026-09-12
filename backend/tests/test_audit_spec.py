@@ -31,6 +31,8 @@ CREDS = {
     "accounts":     ("accounts",              "Acct@123",    "ACCOUNTS"),
     "dispatch":     ("dispatch",              "Disp@123",    "DISPATCH"),
     "installation": ("installation",          "Install@123", "INSTALLATION"),
+    "instmgr":      ("instmgr",               "InstMgr@123", "INSTALLATION_MANAGER"),
+    "instmem":      ("instmem",               "InstMem@123", "INSTALLATION_MEMBER"),
 }
 
 
@@ -240,13 +242,17 @@ class TestSiteVisitAssigneeOnly:
         sv = next(v for v in vs if v["lead_id"] == lid and v["status"] == "REQUESTED")
         r = requests.post(f"{API}/site-visits/{sv['id']}/assign",
             json={"assigned_user": install2["id"], "visit_date": "2027-01-20"},
-            headers=_hdr(tokens["manager"]))
+            headers=_hdr(tokens["instmgr"]))
         assert r.status_code == 200
-        # default installation user (not assignee) tries to complete
+        # default installation user (not assignee) tries to complete (send valid survey to bypass 422)
         r = requests.post(f"{API}/site-visits/{sv['id']}/complete",
-            json={"survey_info": "hack"}, headers=_hdr(tokens["installation"]))
+            json={"structure_height": "h", "earthing_cable_length": "1",
+                  "dc_cable_length": "2", "ac_cable_length": "3", "surveyor_name": "Hax"},
+            headers=_hdr(tokens["installation"]))
         assert r.status_code == 403
-        # assignee completes OK
+        # assignee completes OK (with structured survey)
         r = requests.post(f"{API}/site-visits/{sv['id']}/complete",
-            json={"survey_info": "roof good"}, headers=_hdr(install2_tok))
+            json={"structure_height": "10ft", "earthing_cable_length": "20m",
+                  "dc_cable_length": "30m", "ac_cable_length": "40m",
+                  "surveyor_name": "S"}, headers=_hdr(install2_tok))
         assert r.status_code == 200

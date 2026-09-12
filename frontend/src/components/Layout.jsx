@@ -16,6 +16,7 @@ const NAV = {
     ["/site-visits", "Site Visits", MapPin],
     ["/escalations", "Escalations", AlertTriangle],
     ["/payments", "Payments", Wallet],
+    ["/complaints", "Complaints", AlertTriangle],
     ["/work-done", "Work Done", ClipboardList],
     ["/lead-employees", "Lead Employees", Contact],
     ["/items", "Item Master", Package],
@@ -29,6 +30,7 @@ const NAV = {
     ["/ecps", "ECP Projects", Workflow],
     ["/site-visits", "Site Visits", MapPin],
     ["/payments", "Payments", Wallet],
+    ["/complaints", "Complaints", AlertTriangle],
   ],
   LEAD: [
     ["/", "Dashboard", LayoutDashboard],
@@ -52,6 +54,20 @@ const NAV = {
     ["/", "Dashboard", LayoutDashboard],
     ["/site-visits", "Site Visits", MapPin],
     ["/ecps", "ECP Projects", Workflow],
+  ],
+  INSTALLATION_MANAGER: [
+    ["/", "Dashboard", LayoutDashboard],
+    ["/site-visits", "Site Visits", MapPin],
+    ["/ecps", "ECP Projects", Workflow],
+  ],
+  INSTALLATION_MEMBER: [
+    ["/", "Dashboard", LayoutDashboard],
+    ["/site-visits", "Site Visits", MapPin],
+    ["/ecps", "ECP Projects", Workflow],
+  ],
+  COMPLAINT: [
+    ["/", "Dashboard", LayoutDashboard],
+    ["/complaints", "Complaints", AlertTriangle],
   ],
 };
 

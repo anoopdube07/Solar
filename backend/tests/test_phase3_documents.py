@@ -208,15 +208,15 @@ class TestFinanceNoReleases:
         assert data["ecp"]["current_team"] == "REGISTRATION"
         reg1 = [t for t in data["tasks"] if t["stage"] == "REGISTRATION_1"]
         applicable = [t for t in reg1 if t.get("applicable")]
-        assert len(applicable) == 4  # base 4 applicable when financing False
+        assert len(applicable) == 3  # Phase 4: base 3 applicable when financing False
         # No financing tasks applicable when financing is False
         names = {t["task_name"] for t in applicable}
-        assert {"CSPDCL Registration", "PPA Preparation", "Cover Letter", "CVA"} == names
+        assert {"Consumer Request", "CVA Print & Sign", "Feasibility Report Upload"} == names
 
 
 # ============ 7. Financing YES creates 3 extra loan tasks after release ============
 class TestFinancingLoanTasks:
-    def test_reg1_has_7_tasks_when_financing(self, tokens):
+    def test_reg1_has_6_tasks_when_financing(self, tokens):
         lid = _mk_lead(tokens, financing=True)
         _yes(tokens, lid)
         ecp_id = _get_lead(tokens, lid).json()["lead"]["ecp_id"]
@@ -225,7 +225,7 @@ class TestFinancingLoanTasks:
         data = _get_ecp(tokens, ecp_id).json()
         reg1 = [t for t in data["tasks"] if t["stage"] == "REGISTRATION_1"]
         applicable = [t for t in reg1 if t.get("applicable")]
-        assert len(applicable) == 7
+        assert len(applicable) == 6  # Phase 4: 3 base + 3 loan
         loan = {t["task_name"] for t in applicable if t["task_name"] in ("Loan Documentation", "Loan Filing", "Bank Submission")}
         assert loan == {"Loan Documentation", "Loan Filing", "Bank Submission"}
 

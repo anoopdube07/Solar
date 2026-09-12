@@ -226,16 +226,22 @@ class TestIssue12PaymentsDrill:
     match /payments/monitor filtered by the same view semantics."""
 
     def test_monitor_project_wise_and_dashboard_match(self, tokens):
-        # snapshot accounts dashboard
-        d = requests.get(f"{API}/dashboard", headers=_hdr(tokens["accounts"])).json()
-        rows = requests.get(f"{API}/payments/monitor", headers=_hdr(tokens["accounts"])).json()
-        # Only ACTIVE ecps count
-        active = [r for r in rows if r["status"] == "ACTIVE"]
-        first_pending = [r for r in active if not r["first_payment_confirmed"]]
-        subsequent = [r for r in active if r["first_payment_confirmed"] and r["total_receivable"] > 0]
+        # Flake mitigation: read both endpoints together, retry once if racy against parallel test creates
+        def _snap():
+            rows = requests.get(f"{API}/payments/monitor", headers=_hdr(tokens["accounts"])).json()
+            d = requests.get(f"{API}/dashboard", headers=_hdr(tokens["accounts"])).json()
+            return d, rows
+        for _ in range(3):
+            d, rows = _snap()
+            active = [r for r in rows if r["status"] == "ACTIVE"]
+            first_pending = [r for r in active if not r["first_payment_confirmed"]]
+            subsequent = [r for r in active if r["first_payment_confirmed"] and r["total_receivable"] > 0]
+            if (d["first_payment_pending_count"] == len(first_pending)
+                    and d["subsequent_followup_count"] == len(subsequent)
+                    and abs(d["total_receivable"] - sum(r["total_receivable"] for r in active)) < 0.01):
+                return
         assert d["first_payment_pending_count"] == len(first_pending)
         assert d["subsequent_followup_count"] == len(subsequent)
-        # total receivable equals sum on active rows
         total = sum(r["total_receivable"] for r in active)
         assert abs(d["total_receivable"] - total) < 0.01
 

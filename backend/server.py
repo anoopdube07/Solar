@@ -6,6 +6,7 @@ load_dotenv(ROOT_DIR / ".env")
 
 import os
 import io
+import re
 import uuid
 import logging
 from datetime import datetime, timezone, timedelta
@@ -453,9 +454,7 @@ async def create_ecp_from_lead(lead: dict, user: dict):
 
 
 async def _create_reg1_tasks(ecp_id: str, financing: bool):
-    task_docs = [_make_task(ecp_id, "REGISTRATION_1", t, True) for t in wf.REG1_BASE_TASKS]
-    for t in wf.REG1_FINANCING_TASKS:
-        task_docs.append(_make_task(ecp_id, "REGISTRATION_1", t, financing))
+    task_docs = _tasks_from_specs(ecp_id, "REGISTRATION_1", financing)
     if task_docs:
         await db.ecp_tasks.insert_many(task_docs)
 
@@ -473,12 +472,19 @@ async def _release_documents_to_reg1(ecp: dict, user: dict):
     })
 
 
-def _make_task(ecp_id, stage, name, applicable):
+def _make_task(ecp_id, stage, name, applicable, team=None, requires=None):
     return {
         "id": new_id(), "ecp_id": ecp_id, "stage": stage, "task_name": name,
         "applicable": applicable, "completed": False, "completed_by": None,
         "completed_by_name": None, "completed_at": None,
+        "team": team or wf.STAGE_TEAM.get(stage), "requires": requires,
     }
+
+
+def _tasks_from_specs(ecp_id, stage, financing):
+    specs = wf.STAGE_TASK_SPECS.get(stage, [])
+    return [_make_task(ecp_id, stage, name, (not fin_only) or bool(financing), team, req)
+            for (name, team, fin_only, req) in specs]
 
 
 @api.post("/leads/{lead_id}/action")
@@ -603,7 +609,9 @@ async def lead_financing(lead_id: str, body: FinancingBody, user: dict = Depends
 async def list_site_visits(user: dict = Depends(get_current_user)):
     if user["role"] in ("OWNER", "MANAGER"):
         visits = await db.lead_site_visits.find({}, NO_ID).sort("created_at", -1).to_list(2000)
-    elif user["role"] == "INSTALLATION":
+    elif user["role"] == "INSTALLATION_MANAGER":
+        visits = await db.lead_site_visits.find({}, NO_ID).sort("created_at", -1).to_list(2000)
+    elif user["role"] in ("INSTALLATION", "INSTALLATION_MEMBER"):
         visits = await db.lead_site_visits.find(
             {"assigned_user": user["id"]}, NO_ID).sort("created_at", -1).to_list(2000)
     else:
@@ -618,14 +626,14 @@ class AssignSiteVisit(BaseModel):
 
 @api.post("/site-visits/{sv_id}/assign")
 async def assign_site_visit(sv_id: str, body: AssignSiteVisit, user: dict = Depends(get_current_user)):
-    require(user, "MANAGER", "OWNER")
+    require(user, "INSTALLATION_MANAGER", "OWNER")
     sv = await db.lead_site_visits.find_one({"id": sv_id}, NO_ID)
     if not sv:
         raise HTTPException(status_code=404, detail="Site visit not found")
     if sv["status"] not in ("REQUESTED", "ASSIGNED"):
         raise HTTPException(status_code=400, detail="Site visit is not open")
     emp = await db.users.find_one({"id": body.assigned_user}, NO_ID)
-    if not emp or emp["role"] != "INSTALLATION":
+    if not emp or emp["role"] not in wf.INSTALL_MEMBER_ROLES:
         raise HTTPException(status_code=400, detail="Assignee must be an Installation team member")
     await db.lead_site_visits.update_one({"id": sv_id}, {"$set": {
         "status": "ASSIGNED", "assigned_user": body.assigned_user,
@@ -635,25 +643,53 @@ async def assign_site_visit(sv_id: str, body: AssignSiteVisit, user: dict = Depe
     return await db.lead_site_visits.find_one({"id": sv_id}, NO_ID)
 
 
+class ExtraMaterial(BaseModel):
+    item_id: Optional[str] = None
+    item_name: str
+    quantity: float
+    unit: str
+
+
 class CompleteSiteVisit(BaseModel):
-    survey_info: str
+    structure_height: str
+    earthing_cable_length: str
+    dc_cable_length: str
+    ac_cable_length: str
+    surveyor_name: str
+    extra_materials: List[ExtraMaterial] = []
 
 
 @api.post("/site-visits/{sv_id}/complete")
 async def complete_site_visit(sv_id: str, body: CompleteSiteVisit, user: dict = Depends(get_current_user)):
-    require(user, "INSTALLATION", "OWNER")
+    require(user, "INSTALLATION", "INSTALLATION_MEMBER", "OWNER")
     sv = await db.lead_site_visits.find_one({"id": sv_id}, NO_ID)
     if not sv:
         raise HTTPException(status_code=404, detail="Site visit not found")
     if sv["status"] != "ASSIGNED":
         raise HTTPException(status_code=400, detail="Only assigned site visits can be completed")
-    if user["role"] == "INSTALLATION" and sv["assigned_user"] != user["id"]:
+    if user["role"] in wf.INSTALL_MEMBER_ROLES and sv["assigned_user"] != user["id"]:
         raise HTTPException(status_code=403, detail="This site visit is not assigned to you")
-    if not (body.survey_info or "").strip():
-        raise HTTPException(status_code=400, detail="Survey information is required")
+    for f in ("structure_height", "earthing_cable_length", "dc_cable_length", "ac_cable_length", "surveyor_name"):
+        if not (getattr(body, f) or "").strip():
+            raise HTTPException(status_code=400, detail="All survey measurement fields and name are required")
+    # validate extra material items against active Item Master where an item_id is given
+    mats = []
+    for m in body.extra_materials:
+        if m.item_id:
+            it = await db.items.find_one({"id": m.item_id}, NO_ID)
+            if not it or not it.get("active", True):
+                raise HTTPException(status_code=400, detail="Extra material item must be an active Item Master item")
+        mats.append(m.dict())
+    survey = {
+        "structure_height": body.structure_height.strip(),
+        "earthing_cable_length": body.earthing_cable_length.strip(),
+        "dc_cable_length": body.dc_cable_length.strip(),
+        "ac_cable_length": body.ac_cable_length.strip(),
+        "surveyor_name": body.surveyor_name.strip(),
+        "extra_materials": mats,
+    }
     await db.lead_site_visits.update_one({"id": sv_id}, {"$set": {
-        "status": "DONE", "survey_info": body.survey_info.strip(), "completed_at": now_iso()}})
-    # lead returns to Lead Team, action required
+        "status": "DONE", "survey_info": survey, "completed_at": now_iso()}})
     await db.leads.update_one({"id": sv["lead_id"]}, {"$set": {
         "status": "PENDING", "action_required": True, "current_team": "LEAD",
         "return_reason": "SITE_VISIT_COMPLETED", "updated_at": now_iso()}})
@@ -745,10 +781,19 @@ async def enrich_ecp(ecp: dict, sla_map: dict = None):
 
 
 ALLOWED_STAGES = {
-    "REGISTRATION": ["REGISTRATION_1", "REGISTRATION_2"],
+    "REGISTRATION": ["REGISTRATION_1", "REGISTRATION_2", "NET_METERING"],
     "DISPATCH": ["DISPATCH"],
     "INSTALLATION": ["INSTALLATION", "NET_METERING"],
+    "INSTALLATION_MANAGER": ["INSTALLATION", "NET_METERING"],
+    "INSTALLATION_MEMBER": ["INSTALLATION", "NET_METERING"],
 }
+
+
+def _scrub_dispatch(e: dict):
+    """Dispatch must never receive financial data (enforced server-side)."""
+    for k in ("project_price",):
+        e.pop(k, None)
+    return e
 
 
 def ecp_filter_for_role(user: dict):
@@ -759,8 +804,10 @@ def ecp_filter_for_role(user: dict):
         return {"current_stage": {"$in": ALLOWED_STAGES["REGISTRATION"]}}
     if role == "DISPATCH":
         return {"current_stage": "DISPATCH"}
-    if role == "INSTALLATION":
-        return {"current_stage": {"$in": ALLOWED_STAGES["INSTALLATION"]}, "responsible_user": user["id"]}
+    if role == "INSTALLATION_MANAGER":
+        return {"current_stage": {"$in": ["INSTALLATION", "NET_METERING"]}}
+    if role in ("INSTALLATION", "INSTALLATION_MEMBER"):
+        return {"current_stage": {"$in": ["INSTALLATION", "NET_METERING"]}, "responsible_user": user["id"]}
     return {"id": "__none__"}
 
 
@@ -793,6 +840,8 @@ async def list_ecps(stage: Optional[str] = None, view: Optional[str] = None, use
         await enrich_ecp(e, sla_map)
     if view:
         ecps = [e for e in ecps if _matches_view(e, view)]
+    if user["role"] == "DISPATCH":
+        ecps = [_scrub_dispatch(e) for e in ecps]
     return ecps
 
 
@@ -805,6 +854,9 @@ async def get_ecp(ecp_id: str, user: dict = Depends(get_current_user)):
     tasks = await db.ecp_tasks.find({"ecp_id": ecp_id}, NO_ID).to_list(500)
     history = await db.ecp_stage_history.find({"ecp_id": ecp_id}, NO_ID).sort("changed_at", 1).to_list(500)
     payments = await db.payments.find({"ecp_id": ecp_id}, NO_ID).sort("date", -1).to_list(500)
+    if user["role"] == "DISPATCH":
+        _scrub_dispatch(ecp)
+        payments = []
     return {"ecp": ecp, "tasks": tasks, "history": history, "payments": payments}
 
 
@@ -825,16 +877,15 @@ async def _advance_stage(ecp: dict, user: dict, note: str = ""):
         if target == "DISPATCH":
             upd["dispatch_started"] = False
         if target == "INSTALLATION":
-            # Dispatch completed -> route to Manager for installation-employee assignment
+            # Dispatch completed -> route to Installation Manager for member assignment
             upd["install_status"] = "AWAITING_ASSIGNMENT"
-            upd["current_team"] = "MANAGER"
+            upd["current_team"] = "INSTALLATION_MANAGER"
         if target == "NET_METERING":
-            # keep the assigned installation employee through net metering
+            # keep the assigned installation member through net metering (for the Close NM task)
             upd["responsible_user"] = ecp.get("responsible_user")
             upd["responsible_user_name"] = ecp.get("responsible_user_name")
-        # create tasks for the new stage
-        task_names = wf.STAGE_TASKS.get(target, [])
-        docs = [_make_task(ecp["id"], target, t, True) for t in task_names]
+        # create tasks for the new stage from specs (financing-aware, team + requires)
+        docs = _tasks_from_specs(ecp["id"], target, bool(ecp.get("financing_required")))
         if docs:
             await db.ecp_tasks.insert_many(docs)
     await db.ecps.update_one({"id": ecp["id"]}, {"$set": upd})
@@ -874,15 +925,26 @@ async def complete_task(ecp_id: str, task_id: str, user: dict = Depends(get_curr
     task = await db.ecp_tasks.find_one({"id": task_id, "ecp_id": ecp_id}, NO_ID)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
-    stage_team = wf.STAGE_TEAM.get(task["stage"])
-    if user["role"] not in ("OWNER", stage_team):
+    team = task.get("team") or wf.STAGE_TEAM.get(task["stage"])
+    if user["role"] == "OWNER":
+        pass
+    elif team == "INSTALLATION_MEMBER":
+        if user["role"] not in wf.INSTALL_MEMBER_ROLES or ecp.get("responsible_user") != user["id"]:
+            raise HTTPException(status_code=403, detail="This task is assigned to the installation member on this project")
+    elif user["role"] != team:
         raise HTTPException(status_code=403, detail="Only the responsible team can complete this task")
-    if user["role"] == "INSTALLATION" and task["stage"] in ("INSTALLATION", "NET_METERING") and ecp.get("responsible_user") != user["id"]:
-        raise HTTPException(status_code=403, detail="This project is not assigned to you")
     if task["stage"] != ecp["current_stage"]:
         raise HTTPException(status_code=400, detail="Task does not belong to the current stage")
     if not task["applicable"]:
         raise HTTPException(status_code=400, detail="Task is not applicable")
+    if task.get("requires"):
+        req = await db.ecp_tasks.find_one({"ecp_id": ecp_id, "task_name": task["requires"]}, NO_ID)
+        if req and req.get("applicable") and not req.get("completed"):
+            raise HTTPException(status_code=400, detail=f"Complete '{task['requires']}' first")
+    if task["task_name"] == "Upload Installation Photos to CSPDCL Portal":
+        photos = await db.ecp_photos.find({"ecp_id": ecp_id, "approved": True}, NO_ID).to_list(50)
+        if len({p["photo_type"] for p in photos}) < len(wf.INSTALL_PHOTO_TYPES):
+            raise HTTPException(status_code=400, detail="Manager-approved installation photos are not available yet")
     if task["stage"] == "DISPATCH" and not ecp.get("dispatch_started"):
         raise HTTPException(status_code=400, detail="Start Dispatch before completing dispatch tasks")
     await db.ecp_tasks.update_one({"id": task_id}, {"$set": {
@@ -922,18 +984,18 @@ class AssignInstallation(BaseModel):
 
 @api.post("/ecps/{ecp_id}/assign-installation")
 async def assign_installation(ecp_id: str, body: AssignInstallation, user: dict = Depends(get_current_user)):
-    require(user, "MANAGER", "OWNER")
+    require(user, "INSTALLATION_MANAGER", "MANAGER", "OWNER")
     ecp = await db.ecps.find_one({"id": ecp_id}, NO_ID)
     if not ecp:
         raise HTTPException(status_code=404, detail="ECP not found")
     if ecp["current_stage"] != "INSTALLATION" or ecp.get("install_status") != "AWAITING_ASSIGNMENT":
         raise HTTPException(status_code=400, detail="ECP is not awaiting installation assignment")
     emp = await db.users.find_one({"id": body.assigned_user}, NO_ID)
-    if not emp or emp["role"] != "INSTALLATION" or not emp.get("active", True):
+    if not emp or emp["role"] not in wf.INSTALL_MEMBER_ROLES or not emp.get("active", True):
         raise HTTPException(status_code=400, detail="Assignee must be an active Installation team member")
     await db.ecps.update_one({"id": ecp_id}, {"$set": {
         "responsible_user": emp["id"], "responsible_user_name": emp["name"],
-        "current_team": "INSTALLATION", "install_status": "READY_TO_INSTALL", "updated_at": now_iso()}})
+        "current_team": "INSTALLATION_MEMBER", "install_status": "READY_TO_INSTALL", "updated_at": now_iso()}})
     await db.ecp_stage_history.insert_one({
         "id": new_id(), "ecp_id": ecp_id, "from_stage": "INSTALLATION", "to_stage": "INSTALLATION",
         "changed_by": user["id"], "changed_by_name": user["name"], "changed_at": now_iso(),
@@ -944,26 +1006,64 @@ async def assign_installation(ecp_id: str, body: AssignInstallation, user: dict 
 
 @api.post("/ecps/{ecp_id}/installation")
 async def installation_action(ecp_id: str, body: InstallBody, user: dict = Depends(get_current_user)):
-    require(user, "INSTALLATION", "OWNER")
+    require(user, "INSTALLATION", "INSTALLATION_MEMBER", "OWNER")
     ecp = await db.ecps.find_one({"id": ecp_id}, NO_ID)
     if not ecp:
         raise HTTPException(status_code=404, detail="ECP not found")
     if ecp["current_stage"] != "INSTALLATION":
         raise HTTPException(status_code=400, detail="ECP is not in Installation stage")
-    if user["role"] == "INSTALLATION" and ecp.get("responsible_user") != user["id"]:
+    if user["role"] in wf.INSTALL_MEMBER_ROLES and ecp.get("responsible_user") != user["id"]:
         raise HTTPException(status_code=403, detail="This installation is not assigned to you")
     if body.action == "start":
         if ecp.get("install_status") != "READY_TO_INSTALL":
             raise HTTPException(status_code=400, detail="Installation is not ready to start")
         await db.ecps.update_one({"id": ecp_id}, {"$set": {"install_status": "IN_PROCESS", "updated_at": now_iso()}})
-    elif body.action == "complete":
-        if ecp.get("install_status") != "IN_PROCESS":
-            raise HTTPException(status_code=400, detail="Installation must be in process to complete")
-        await db.ecps.update_one({"id": ecp_id}, {"$set": {"install_status": "COMPLETED", "updated_at": now_iso()}})
-        fresh = await db.ecps.find_one({"id": ecp_id}, NO_ID)
-        await _advance_stage(fresh, user, note="Installation completed")
+    elif body.action == "submit":
+        if ecp.get("install_status") not in ("IN_PROCESS", "REJECTED"):
+            raise HTTPException(status_code=400, detail="Installation must be in process to submit")
+        photos = await db.ecp_photos.find({"ecp_id": ecp_id}, NO_ID).to_list(50)
+        have = {p["photo_type"] for p in photos}
+        missing = [wf.INSTALL_PHOTO_LABELS[t] for t in wf.INSTALL_PHOTO_TYPES if t not in have]
+        if missing:
+            raise HTTPException(status_code=400, detail="Upload all 5 photos before submitting. Missing: " + ", ".join(missing))
+        await db.ecps.update_one({"id": ecp_id}, {"$set": {"install_status": "PENDING_ACCEPTANCE", "updated_at": now_iso()}})
+        await log_activity(user, "Installation Submitted for Acceptance", "ECP", ecp_id, ecp.get("lead_name", ""), "")
     else:
         raise HTTPException(status_code=400, detail="Invalid installation action")
+    return await get_ecp(ecp_id, user)
+
+
+class AcceptBody(BaseModel):
+    remarks: Optional[str] = None
+
+
+@api.post("/ecps/{ecp_id}/installation/accept")
+async def installation_accept(ecp_id: str, body: AcceptBody, user: dict = Depends(get_current_user)):
+    require(user, "INSTALLATION_MANAGER", "MANAGER", "OWNER")
+    ecp = await db.ecps.find_one({"id": ecp_id}, NO_ID)
+    if not ecp or ecp["current_stage"] != "INSTALLATION":
+        raise HTTPException(status_code=400, detail="ECP is not in Installation stage")
+    if ecp.get("install_status") != "PENDING_ACCEPTANCE":
+        raise HTTPException(status_code=400, detail="Installation is not pending acceptance")
+    await db.ecp_photos.update_many({"ecp_id": ecp_id}, {"$set": {"approved": True, "approved_by": user["name"], "approved_at": now_iso()}})
+    await db.ecps.update_one({"id": ecp_id}, {"$set": {"install_status": "COMPLETED", "updated_at": now_iso()}})
+    fresh = await db.ecps.find_one({"id": ecp_id}, NO_ID)
+    await _advance_stage(fresh, user, note="Installation accepted by manager")
+    await log_activity(user, "Installation Accepted", "ECP", ecp_id, ecp.get("lead_name", ""), body.remarks or "")
+    return await get_ecp(ecp_id, user)
+
+
+@api.post("/ecps/{ecp_id}/installation/reject")
+async def installation_reject(ecp_id: str, body: AcceptBody, user: dict = Depends(get_current_user)):
+    require(user, "INSTALLATION_MANAGER", "MANAGER", "OWNER")
+    if not (body.remarks or "").strip():
+        raise HTTPException(status_code=400, detail="Rejection remarks are mandatory")
+    ecp = await db.ecps.find_one({"id": ecp_id}, NO_ID)
+    if not ecp or ecp.get("install_status") != "PENDING_ACCEPTANCE":
+        raise HTTPException(status_code=400, detail="Installation is not pending acceptance")
+    await db.ecps.update_one({"id": ecp_id}, {"$set": {
+        "install_status": "REJECTED", "install_reject_remarks": body.remarks.strip(), "updated_at": now_iso()}})
+    await log_activity(user, "Installation Rejected", "ECP", ecp_id, ecp.get("lead_name", ""), body.remarks.strip())
     return await get_ecp(ecp_id, user)
 
 
@@ -1270,6 +1370,9 @@ async def meta(user: dict = Depends(get_current_user)):
         "roles": wf.ROLES, "role_labels": wf.ROLE_LABELS,
         "stage_order": wf.STAGE_ORDER, "stage_labels": wf.STAGE_LABELS,
         "lost_reasons": wf.LOST_REASONS, "closure_reasons": wf.CLOSURE_REASONS,
+        "install_photo_types": wf.INSTALL_PHOTO_TYPES, "install_photo_labels": wf.INSTALL_PHOTO_LABELS,
+        "complaint_priorities": wf.COMPLAINT_PRIORITIES, "complaint_statuses": wf.COMPLAINT_STATUSES,
+        "complaint_teams": wf.COMPLAINT_TEAMS,
     }
 
 
@@ -1791,6 +1894,389 @@ async def release_documents(lead_id: str, user: dict = Depends(get_current_user)
     return await _lead_bundle(lead_id)
 
 
+# ========================= PHASE 6: INSTALLATION PHOTOS =========================
+_IMG_EXT = {"image/jpeg": "jpg", "image/png": "png"}
+
+
+@api.post("/ecps/{ecp_id}/install-photos")
+async def upload_install_photo(ecp_id: str, photo_type: str = Form(...), file: UploadFile = File(...),
+                               user: dict = Depends(get_current_user)):
+    require(user, "INSTALLATION", "INSTALLATION_MEMBER", "OWNER")
+    ecp = await db.ecps.find_one({"id": ecp_id}, NO_ID)
+    if not ecp or ecp["current_stage"] != "INSTALLATION":
+        raise HTTPException(status_code=400, detail="ECP is not in Installation stage")
+    if user["role"] in wf.INSTALL_MEMBER_ROLES and ecp.get("responsible_user") != user["id"]:
+        raise HTTPException(status_code=403, detail="This installation is not assigned to you")
+    if photo_type not in wf.INSTALL_PHOTO_TYPES:
+        raise HTTPException(status_code=400, detail="Invalid photo type")
+    ct = (file.content_type or "").lower()
+    if ct not in wf.PHOTO_ALLOWED_CONTENT_TYPES:
+        raise HTTPException(status_code=400, detail="Only JPG or PNG photos are allowed")
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty file")
+    if len(data) > wf.DOC_MAX_BYTES:
+        raise HTTPException(status_code=400, detail="File too large (max 10 MB)")
+    path = f"{APP_NAME}/install_photos/{ecp_id}/{new_id()}.{_IMG_EXT.get(ct, 'jpg')}"
+    try:
+        result = put_object(path, data, ct)
+    except Exception as e:
+        logger.error(f"storage upload failed: {e}")
+        raise HTTPException(status_code=502, detail="File storage upload failed")
+    await db.ecp_photos.delete_many({"ecp_id": ecp_id, "photo_type": photo_type})
+    doc = {"id": new_id(), "ecp_id": ecp_id, "photo_type": photo_type, "storage_path": result.get("path", path),
+           "content_type": ct, "approved": False, "uploaded_by": user["id"], "uploaded_by_name": user["name"],
+           "uploaded_at": now_iso(), "geo": None}
+    await db.ecp_photos.insert_one(doc)
+    have = {p["photo_type"] for p in await db.ecp_photos.find({"ecp_id": ecp_id}, NO_ID).to_list(50)}
+    return {"uploaded": photo_type, "have": sorted(have),
+            "missing": [t for t in wf.INSTALL_PHOTO_TYPES if t not in have]}
+
+
+@api.get("/ecps/{ecp_id}/install-photos")
+async def list_install_photos(ecp_id: str, user: dict = Depends(get_current_user)):
+    ecp = await db.ecps.find_one({"id": ecp_id}, NO_ID)
+    if not ecp:
+        raise HTTPException(status_code=404, detail="ECP not found")
+    # Registration only sees APPROVED photos; installation/manager/owner see all
+    if user["role"] == "REGISTRATION":
+        photos = await db.ecp_photos.find({"ecp_id": ecp_id, "approved": True}, NO_ID).to_list(50)
+    elif user["role"] in (wf.INSTALL_MEMBER_ROLES | {"INSTALLATION_MANAGER", "MANAGER", "OWNER"}):
+        photos = await db.ecp_photos.find({"ecp_id": ecp_id}, NO_ID).to_list(50)
+    else:
+        raise HTTPException(status_code=403, detail="Not authorized to view installation photos")
+    return {"photos": photos, "types": wf.INSTALL_PHOTO_TYPES, "labels": wf.INSTALL_PHOTO_LABELS}
+
+
+@api.get("/ecps/{ecp_id}/install-photos/{photo_id}/download")
+async def download_install_photo(ecp_id: str, photo_id: str, user: dict = Depends(get_current_user)):
+    p = await db.ecp_photos.find_one({"id": photo_id, "ecp_id": ecp_id}, NO_ID)
+    if not p:
+        raise HTTPException(status_code=404, detail="Photo not found")
+    if user["role"] == "REGISTRATION" and not p.get("approved"):
+        raise HTTPException(status_code=403, detail="Photo not yet approved")
+    if user["role"] not in (wf.INSTALL_MEMBER_ROLES | {"INSTALLATION_MANAGER", "MANAGER", "OWNER", "REGISTRATION"}):
+        raise HTTPException(status_code=403, detail="Not authorized")
+    content, ct = get_object(p["storage_path"])
+    return Response(content=content, media_type=p.get("content_type") or ct)
+
+
+# ========================= PHASE 5: DELIVERY CHALLAN =========================
+class ChallanItem(BaseModel):
+    item_id: Optional[str] = None
+    item_name: str
+    unit: str
+    quantity: float
+
+
+class ChallanBody(BaseModel):
+    items: List[ChallanItem]
+
+
+@api.get("/ecps/{ecp_id}/challan")
+async def get_challan(ecp_id: str, user: dict = Depends(get_current_user)):
+    require(user, "DISPATCH", "ACCOUNTS", "MANAGER", "OWNER")
+    ch = await db.delivery_challans.find_one({"ecp_id": ecp_id}, NO_ID)
+    return ch or {}
+
+
+@api.post("/ecps/{ecp_id}/challan")
+async def save_challan(ecp_id: str, body: ChallanBody, user: dict = Depends(get_current_user)):
+    require(user, "DISPATCH", "OWNER")
+    ecp = await db.ecps.find_one({"id": ecp_id}, NO_ID)
+    if not ecp:
+        raise HTTPException(status_code=404, detail="ECP not found")
+    existing = await db.delivery_challans.find_one({"ecp_id": ecp_id}, NO_ID)
+    if existing and existing.get("status") == "FINALIZED":
+        raise HTTPException(status_code=400, detail="Delivery Challan is already finalized")
+    for it in body.items:
+        if it.item_id:
+            m = await db.items.find_one({"id": it.item_id}, NO_ID)
+            if not m or not m.get("active", True):
+                raise HTTPException(status_code=400, detail="Challan item must be an active Item Master item")
+    doc = {"ecp_id": ecp_id, "items": [i.dict() for i in body.items], "status": "DRAFT",
+           "updated_by": user["name"], "updated_at": now_iso()}
+    if existing:
+        await db.delivery_challans.update_one({"ecp_id": ecp_id}, {"$set": doc})
+    else:
+        doc["id"] = new_id()
+        doc["created_by"] = user["name"]
+        await db.delivery_challans.insert_one(doc)
+    return await db.delivery_challans.find_one({"ecp_id": ecp_id}, NO_ID)
+
+
+@api.post("/ecps/{ecp_id}/challan/finalize")
+async def finalize_challan(ecp_id: str, user: dict = Depends(get_current_user)):
+    require(user, "DISPATCH", "OWNER")
+    ch = await db.delivery_challans.find_one({"ecp_id": ecp_id}, NO_ID)
+    if not ch:
+        raise HTTPException(status_code=400, detail="Create the challan before finalizing")
+    if ch.get("status") == "FINALIZED":
+        raise HTTPException(status_code=400, detail="Already finalized")
+    if not ch.get("items"):
+        raise HTTPException(status_code=400, detail="Add at least one item before finalizing")
+    await db.delivery_challans.update_one({"ecp_id": ecp_id}, {"$set": {
+        "status": "FINALIZED", "finalized_by": user["name"], "finalized_at": now_iso()}})
+    await log_activity(user, "Delivery Challan Finalized", "ECP", ecp_id, ch.get("ecp_id", ""), "")
+    return await db.delivery_challans.find_one({"ecp_id": ecp_id}, NO_ID)
+
+
+@api.get("/challans")
+async def list_finalized_challans(user: dict = Depends(get_current_user)):
+    require(user, "ACCOUNTS", "MANAGER", "OWNER")
+    return await db.delivery_challans.find({"status": "FINALIZED"}, NO_ID).sort("finalized_at", -1).to_list(2000)
+
+
+# ========================= PHASE 8: COMPLAINTS =========================
+class CategoryBody(BaseModel):
+    name: str
+
+
+class CategoryUpdate(BaseModel):
+    name: Optional[str] = None
+    active: Optional[bool] = None
+
+
+@api.get("/complaint-categories")
+async def list_categories(active_only: bool = False, user: dict = Depends(get_current_user)):
+    q = {"active": True} if active_only else {}
+    return await db.complaint_categories.find(q, NO_ID).sort("name", 1).to_list(500)
+
+
+@api.post("/complaint-categories")
+async def create_category(body: CategoryBody, user: dict = Depends(get_current_user)):
+    require(user, "OWNER")
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Name required")
+    if await db.complaint_categories.find_one({"name": {"$regex": f"^{re.escape(name)}$", "$options": "i"}}):
+        raise HTTPException(status_code=409, detail="Category already exists")
+    doc = {"id": new_id(), "name": name, "active": True, "created_at": now_iso()}
+    await db.complaint_categories.insert_one(doc)
+    return {k: v for k, v in doc.items() if k != "_id"}
+
+
+@api.patch("/complaint-categories/{cat_id}")
+async def update_category(cat_id: str, body: CategoryUpdate, user: dict = Depends(get_current_user)):
+    require(user, "OWNER")
+    upd = {k: v for k, v in body.dict().items() if v is not None}
+    if "name" in upd:
+        upd["name"] = upd["name"].strip()
+    await db.complaint_categories.update_one({"id": cat_id}, {"$set": upd})
+    return await db.complaint_categories.find_one({"id": cat_id}, NO_ID)
+
+
+class ComplaintSLABody(BaseModel):
+    config: dict  # {"<category_id>|<PRIORITY>": days}
+
+
+@api.get("/complaint-sla")
+async def get_complaint_sla(user: dict = Depends(get_current_user)):
+    doc = await db.complaint_sla.find_one({"id": "singleton"}, NO_ID)
+    return doc or {"id": "singleton", "config": {}}
+
+
+@api.put("/complaint-sla")
+async def set_complaint_sla(body: ComplaintSLABody, user: dict = Depends(get_current_user)):
+    require(user, "OWNER")
+    cfg = {k: int(v) for k, v in body.config.items()}
+    await db.complaint_sla.update_one({"id": "singleton"}, {"$set": {"config": cfg}}, upsert=True)
+    return {"id": "singleton", "config": cfg}
+
+
+async def _complaint_due_date(category_id, priority):
+    sla = await db.complaint_sla.find_one({"id": "singleton"}, NO_ID)
+    cfg = (sla or {}).get("config", {})
+    days = cfg.get(f"{category_id}|{priority}")
+    if not days:
+        return None
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+    ist = _dt.now(_tz.utc) + _td(hours=5, minutes=30)
+    return (ist.date() + _td(days=int(days))).isoformat()
+
+
+def _complaint_overdue(c):
+    if c.get("status") in ("RESOLVED", "CLOSED") or not c.get("sla_due_date"):
+        return False, 0
+    today = ist_today_str()
+    if today > c["sla_due_date"]:
+        from datetime import date as _d
+        days = (_d.fromisoformat(today) - _d.fromisoformat(c["sla_due_date"])).days
+        return True, days
+    return False, 0
+
+
+def _complaint_enrich(c):
+    overdue, days = _complaint_overdue(c)
+    c["overdue"] = overdue
+    c["days_overdue"] = days
+    c["due_today"] = (not overdue) and c.get("sla_due_date") == ist_today_str() and c.get("status") not in ("RESOLVED", "CLOSED")
+    return c
+
+
+class ComplaintCreate(BaseModel):
+    title: str
+    description: Optional[str] = ""
+    category_id: str
+    priority: str
+    customer_name: Optional[str] = ""
+    customer_phone: Optional[str] = ""
+    lead_id: Optional[str] = None
+    ecp_id: Optional[str] = None
+
+
+class ComplaintAssign(BaseModel):
+    assigned_team: str
+    assigned_user: Optional[str] = None
+
+
+class ComplaintStatusBody(BaseModel):
+    status: str
+    remarks: Optional[str] = ""
+
+
+async def _complaint_hist(cid, user, action, details=""):
+    await db.complaint_history.insert_one({
+        "id": new_id(), "complaint_id": cid, "ts": now_iso(),
+        "user_name": user["name"], "role": user["role"], "action": action, "details": details})
+
+
+@api.post("/complaints")
+async def create_complaint(body: ComplaintCreate, user: dict = Depends(get_current_user)):
+    require(user, "COMPLAINT", "MANAGER", "OWNER")
+    if body.priority not in wf.COMPLAINT_PRIORITIES:
+        raise HTTPException(status_code=400, detail="Valid priority is required")
+    cat = await db.complaint_categories.find_one({"id": body.category_id}, NO_ID)
+    if not cat or not cat.get("active", True):
+        raise HTTPException(status_code=400, detail="Valid active category is required")
+    due = await _complaint_due_date(body.category_id, body.priority)
+    doc = {"id": new_id(), "title": body.title.strip(), "description": (body.description or "").strip(),
+           "category_id": body.category_id, "category_name": cat["name"], "priority": body.priority,
+           "status": "REGISTERED", "assigned_team": None, "assigned_user": None, "assigned_user_name": None,
+           "customer_name": (body.customer_name or "").strip(), "customer_phone": (body.customer_phone or "").strip(),
+           "lead_id": body.lead_id, "ecp_id": body.ecp_id, "sla_due_date": due,
+           "registered_by": user["id"], "registered_by_name": user["name"], "created_at": now_iso(),
+           "resolved_at": None, "closed_at": None}
+    await db.complaints.insert_one(doc)
+    await _complaint_hist(doc["id"], user, "Registered", cat["name"])
+    return _complaint_enrich({k: v for k, v in doc.items() if k != "_id"})
+
+
+@api.get("/complaints")
+async def list_complaints(user: dict = Depends(get_current_user)):
+    role = user["role"]
+    if role in ("OWNER", "MANAGER", "COMPLAINT"):
+        q = {}
+    else:
+        q = {"assigned_user": user["id"]}
+    cs = await db.complaints.find(q, NO_ID).sort("created_at", -1).to_list(3000)
+    return [_complaint_enrich(c) for c in cs]
+
+
+@api.get("/complaints/{cid}")
+async def get_complaint(cid: str, user: dict = Depends(get_current_user)):
+    c = await db.complaints.find_one({"id": cid}, NO_ID)
+    if not c:
+        raise HTTPException(status_code=404, detail="Complaint not found")
+    role = user["role"]
+    if role not in ("OWNER", "MANAGER", "COMPLAINT") and c.get("assigned_user") != user["id"]:
+        raise HTTPException(status_code=403, detail="Not authorized to view this complaint")
+    hist = await db.complaint_history.find({"complaint_id": cid}, NO_ID).sort("ts", 1).to_list(500)
+    atts = await db.complaint_attachments.find({"complaint_id": cid}, NO_ID).to_list(100)
+    return {"complaint": _complaint_enrich(c), "history": hist, "attachments": atts}
+
+
+@api.post("/complaints/{cid}/assign")
+async def assign_complaint(cid: str, body: ComplaintAssign, user: dict = Depends(get_current_user)):
+    require(user, "MANAGER", "OWNER")
+    c = await db.complaints.find_one({"id": cid}, NO_ID)
+    if not c:
+        raise HTTPException(status_code=404, detail="Complaint not found")
+    if body.assigned_team not in wf.COMPLAINT_TEAMS:
+        raise HTTPException(status_code=400, detail="Invalid team")
+    upd = {"assigned_team": body.assigned_team, "status": "ASSIGNED", "updated_at": now_iso()}
+    if body.assigned_user:
+        emp = await db.users.find_one({"id": body.assigned_user}, NO_ID)
+        if not emp:
+            raise HTTPException(status_code=400, detail="Invalid assignee")
+        upd["assigned_user"] = emp["id"]
+        upd["assigned_user_name"] = emp["name"]
+    await db.complaints.update_one({"id": cid}, {"$set": upd})
+    await _complaint_hist(cid, user, "Assigned", f"{body.assigned_team}{(' / ' + upd.get('assigned_user_name')) if upd.get('assigned_user_name') else ''}")
+    return _complaint_enrich(await db.complaints.find_one({"id": cid}, NO_ID))
+
+
+@api.post("/complaints/{cid}/status")
+async def set_complaint_status(cid: str, body: ComplaintStatusBody, user: dict = Depends(get_current_user)):
+    c = await db.complaints.find_one({"id": cid}, NO_ID)
+    if not c:
+        raise HTTPException(status_code=404, detail="Complaint not found")
+    role = user["role"]
+    target = body.status
+    if target in ("IN_PROGRESS", "RESOLVED"):
+        if role != "OWNER" and c.get("assigned_user") != user["id"]:
+            raise HTTPException(status_code=403, detail="Only the assigned member can update this complaint")
+        if target == "IN_PROGRESS" and c["status"] != "ASSIGNED":
+            raise HTTPException(status_code=400, detail="Complaint must be ASSIGNED first")
+        if target == "RESOLVED" and c["status"] != "IN_PROGRESS":
+            raise HTTPException(status_code=400, detail="Complaint must be IN_PROGRESS to resolve")
+        upd = {"status": target, "updated_at": now_iso()}
+        if target == "RESOLVED":
+            upd["resolved_at"] = now_iso()
+    elif target == "CLOSED":
+        if role not in ("MANAGER", "OWNER"):
+            raise HTTPException(status_code=403, detail="Only Manager/Owner can close a complaint")
+        if c["status"] != "RESOLVED":
+            raise HTTPException(status_code=400, detail="Only RESOLVED complaints can be closed")
+        upd = {"status": "CLOSED", "closed_at": now_iso(), "updated_at": now_iso()}
+    else:
+        raise HTTPException(status_code=400, detail="Invalid status transition")
+    await db.complaints.update_one({"id": cid}, {"$set": upd})
+    await _complaint_hist(cid, user, f"Status → {target}", body.remarks or "")
+    return _complaint_enrich(await db.complaints.find_one({"id": cid}, NO_ID))
+
+
+@api.post("/complaints/{cid}/attachments")
+async def upload_complaint_attachment(cid: str, file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+    c = await db.complaints.find_one({"id": cid}, NO_ID)
+    if not c:
+        raise HTTPException(status_code=404, detail="Complaint not found")
+    role = user["role"]
+    if role not in ("OWNER", "MANAGER", "COMPLAINT") and c.get("assigned_user") != user["id"]:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    ct = (file.content_type or "").lower()
+    ext = file.filename.rsplit(".", 1)[-1].lower() if file.filename and "." in file.filename else ""
+    if ct not in wf.DOC_ALLOWED_CONTENT_TYPES and ext not in wf.DOC_ALLOWED_EXT:
+        raise HTTPException(status_code=400, detail="Only JPG, PNG or PDF files are allowed")
+    data = await file.read()
+    if len(data) > wf.DOC_MAX_BYTES:
+        raise HTTPException(status_code=400, detail="File too large (max 10 MB)")
+    path = f"{APP_NAME}/complaints/{cid}/{new_id()}.{ext or 'bin'}"
+    result = put_object(path, data, ct or "application/octet-stream")
+    doc = {"id": new_id(), "complaint_id": cid, "storage_path": result.get("path", path),
+           "original_filename": file.filename, "content_type": ct, "uploaded_by_name": user["name"],
+           "uploaded_at": now_iso()}
+    await db.complaint_attachments.insert_one(doc)
+    await _complaint_hist(cid, user, "Attachment Added", file.filename or "")
+    return {k: v for k, v in doc.items() if k != "_id"}
+
+
+@api.get("/complaints/{cid}/attachments/{att_id}/download")
+async def download_complaint_attachment(cid: str, att_id: str, user: dict = Depends(get_current_user)):
+    c = await db.complaints.find_one({"id": cid}, NO_ID)
+    if not c:
+        raise HTTPException(status_code=404, detail="Complaint not found")
+    role = user["role"]
+    if role not in ("OWNER", "MANAGER", "COMPLAINT") and c.get("assigned_user") != user["id"]:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    a = await db.complaint_attachments.find_one({"id": att_id, "complaint_id": cid}, NO_ID)
+    if not a:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    content, ct = get_object(a["storage_path"])
+    return Response(content=content, media_type=a.get("content_type") or ct,
+                    headers={"Content-Disposition": f'inline; filename="{a.get("original_filename", "file")}"'})
+
+
 app.include_router(api)
 
 app.add_middleware(
@@ -1837,6 +2323,9 @@ async def seed():
         ("accounts", "Acct@123", "Vikram Accounts", "ACCOUNTS"),
         ("dispatch", "Disp@123", "Amit Dispatch", "DISPATCH"),
         ("installation", "Install@123", "Ravi Install", "INSTALLATION"),
+        ("instmgr", "InstMgr@123", "Iqbal Install-Manager", "INSTALLATION_MANAGER"),
+        ("instmem", "InstMem@123", "Manish Install-Member", "INSTALLATION_MEMBER"),
+        ("complaint", "Comp@123", "Neha Complaints", "COMPLAINT"),
     ]
     for uname, pwd, name, role in demo:
         if not await db.users.find_one({"username": uname}):

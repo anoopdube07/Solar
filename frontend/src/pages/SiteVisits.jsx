@@ -23,20 +23,21 @@ export default function SiteVisits() {
   const [assignDlg, setAssignDlg] = useState(null);
   const [completeDlg, setCompleteDlg] = useState(null);
   const [af, setAf] = useState({});
-  const [survey, setSurvey] = useState("");
+  const [survey, setSurvey] = useState({ structure_height: "", earthing_cable_length: "", dc_cable_length: "", ac_cable_length: "", surveyor_name: "", extra_materials: [] });
   const statusFilter = statusParam;
   const setStatusFilter = (v) => nav(v === "ALL" ? "/site-visits" : `/site-visits?status=${v}`);
 
   const load = () => api.get("/site-visits").then((r) => setVisits(r.data));
   useEffect(() => {
     load();
-    if (user.role === "MANAGER" || user.role === "OWNER") {
-      api.get("/users/team/INSTALLATION").then((r) => setInstallers(r.data)).catch(() => {});
+    if (user.role === "INSTALLATION_MANAGER" || user.role === "MANAGER" || user.role === "OWNER") {
+      api.get("/users/team/INSTALLATION_MEMBER").then((r) => setInstallers(r.data)).catch(() => {});
+      api.get("/users/team/INSTALLATION").then((r) => setInstallers((prev) => [...prev, ...r.data])).catch(() => {});
     }
   }, []);
 
-  const canAssign = user.role === "MANAGER" || user.role === "OWNER";
-  const canComplete = user.role === "INSTALLATION" || user.role === "OWNER";
+  const canAssign = user.role === "INSTALLATION_MANAGER" || user.role === "OWNER";
+  const canComplete = user.role === "INSTALLATION" || user.role === "INSTALLATION_MEMBER" || user.role === "OWNER";
   const shownVisits = visits.filter((v) => statusFilter === "ALL" || v.status === statusFilter);
 
   const doAssign = async () => {
@@ -44,7 +45,7 @@ export default function SiteVisits() {
     catch (e) { toast.error(apiError(e.response?.data?.detail)); }
   };
   const doComplete = async () => {
-    try { await api.post(`/site-visits/${completeDlg.id}/complete`, { survey_info: survey }); toast.success("Site visit completed"); setCompleteDlg(null); setSurvey(""); load(); }
+    try { await api.post(`/site-visits/${completeDlg.id}/complete`, survey); toast.success("Site visit completed"); setCompleteDlg(null); load(); }
     catch (e) { toast.error(apiError(e.response?.data?.detail)); }
   };
 
@@ -73,7 +74,7 @@ export default function SiteVisits() {
                   <TableCell><span className="text-xs font-semibold px-2 py-0.5 rounded-full border bg-slate-100">{v.status}</span></TableCell>
                   <TableCell className="text-sm">{v.assigned_user_name || "—"}</TableCell>
                   <TableCell className="text-sm">{v.visit_date?.slice(0, 10) || "—"}</TableCell>
-                  <TableCell className="text-xs text-slate-500 max-w-[200px] truncate">{v.survey_info || "—"}</TableCell>
+                  <TableCell className="text-xs text-slate-500 max-w-[200px] truncate">{v.survey_info ? (typeof v.survey_info === "object" ? `H:${v.survey_info.structure_height || "-"}` : v.survey_info) : "—"}</TableCell>
                   <TableCell>
                     {canAssign && (v.status === "REQUESTED" || v.status === "ASSIGNED") && <Button size="sm" data-testid={`assign-sv-${v.id}`} onClick={() => { setAssignDlg(v); setAf({ visit_date: "" }); }}>Assign</Button>}
                     {canComplete && v.status === "ASSIGNED" && <Button size="sm" className="ml-2 bg-emerald-600 hover:bg-emerald-700" data-testid={`complete-sv-${v.id}`} onClick={() => { setCompleteDlg(v); setSurvey(""); }}>Complete</Button>}
@@ -103,9 +104,18 @@ export default function SiteVisits() {
       </Dialog>
 
       <Dialog open={!!completeDlg} onOpenChange={(o) => !o && setCompleteDlg(null)}>
-        <DialogContent>
-          <DialogHeader><DialogTitle>Complete Site Visit</DialogTitle></DialogHeader>
-          <div><Label>Survey Information *</Label><Textarea data-testid="survey-info-input" value={survey} onChange={(e) => setSurvey(e.target.value)} placeholder="Roof condition, feasibility, notes…" /></div>
+        <DialogContent className="max-h-[90vh] overflow-y-auto">
+          <DialogHeader><DialogTitle>Complete Site Visit — Survey</DialogTitle></DialogHeader>
+          <div className="space-y-3">
+            <div><Label>Surveyor Name *</Label><Input data-testid="survey-name" value={survey.surveyor_name} onChange={(e) => setSurvey({ ...survey, surveyor_name: e.target.value })} /></div>
+            <div className="grid grid-cols-2 gap-3">
+              <div><Label>Structure Height *</Label><Input data-testid="survey-height" value={survey.structure_height} onChange={(e) => setSurvey({ ...survey, structure_height: e.target.value })} /></div>
+              <div><Label>Earthing Cable Length *</Label><Input data-testid="survey-earthing" value={survey.earthing_cable_length} onChange={(e) => setSurvey({ ...survey, earthing_cable_length: e.target.value })} /></div>
+              <div><Label>DC Cable Length *</Label><Input data-testid="survey-dc" value={survey.dc_cable_length} onChange={(e) => setSurvey({ ...survey, dc_cable_length: e.target.value })} /></div>
+              <div><Label>AC Cable Length *</Label><Input data-testid="survey-ac" value={survey.ac_cable_length} onChange={(e) => setSurvey({ ...survey, ac_cable_length: e.target.value })} /></div>
+            </div>
+            <p className="text-xs text-slate-400">Extra materials &amp; geo-photos can be added from the field app; measurements are mandatory here.</p>
+          </div>
           <DialogFooter><Button data-testid="complete-submit" onClick={doComplete} className="bg-emerald-600 hover:bg-emerald-700">Mark Done · Return to Lead Team</Button></DialogFooter>
         </DialogContent>
       </Dialog>

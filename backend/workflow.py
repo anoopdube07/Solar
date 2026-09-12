@@ -48,24 +48,65 @@ STAGE_TEAM = {
     "ACCOUNTS_1": "ACCOUNTS",
     "DISPATCH": "DISPATCH",
     "INSTALLATION": "INSTALLATION",
-    "NET_METERING": "INSTALLATION",
+    "NET_METERING": "REGISTRATION",
     "REGISTRATION_2": "REGISTRATION",
     "ACCOUNTS_2": "ACCOUNTS",
 }
 
 # Mandatory operational tasks per stage (exact spec names)
-REG1_BASE_TASKS = ["CSPDCL Registration", "PPA Preparation", "Cover Letter", "CVA"]
+REG1_BASE_TASKS = ["Consumer Request", "CVA Print & Sign", "Feasibility Report Upload"]
 REG1_FINANCING_TASKS = ["Loan Documentation", "Loan Filing", "Bank Submission"]
 
-STAGE_TASKS = {
-    "REGISTRATION_1": REG1_BASE_TASKS,  # financing tasks appended dynamically
-    "ACCOUNTS_1": ["Advance Verification"],
-    "DISPATCH": ["Delivery Challan", "Material Dispatch Confirmation", "Dispatch Completed"],
-    "INSTALLATION": [],  # handled via install_status
-    "NET_METERING": ["Net Metering"],
-    "REGISTRATION_2": ["Asset Creation", "Completion Certificate"],
-    "ACCOUNTS_2": ["Final Payment Follow-up"],
+# Task specs per stage: (name, team, financing_only, requires_task_name)
+STAGE_TASK_SPECS = {
+    "REGISTRATION_1": [
+        ("Consumer Request", "REGISTRATION", False, None),
+        ("CVA Print & Sign", "REGISTRATION", False, None),
+        ("Feasibility Report Upload", "REGISTRATION", False, None),
+        ("Loan Documentation", "REGISTRATION", True, None),
+        ("Loan Filing", "REGISTRATION", True, None),
+        ("Bank Submission", "REGISTRATION", True, None),
+    ],
+    "ACCOUNTS_1": [("Advance Verification", "ACCOUNTS", False, None)],
+    "DISPATCH": [
+        ("Delivery Challan", "DISPATCH", False, None),
+        ("Material Dispatch Confirmation", "DISPATCH", False, None),
+        ("Dispatch Completed", "DISPATCH", False, None),
+    ],
+    "NET_METERING": [
+        ("Upload Installation Photos to CSPDCL Portal", "REGISTRATION", False, None),
+        ("DCR Issuance", "REGISTRATION", False, "Upload Installation Photos to CSPDCL Portal"),
+        ("Consumer Approval & Submit", "REGISTRATION", False, "DCR Issuance"),
+        ("Request Net Metering from CSPDCL", "REGISTRATION", False, "Consumer Approval & Submit"),
+        ("Close Net Metering", "INSTALLATION_MEMBER", False, "Request Net Metering from CSPDCL"),
+    ],
+    "REGISTRATION_2": [
+        ("Asset Creation", "REGISTRATION", False, None),
+        ("Completion Certificate", "REGISTRATION", False, "Asset Creation"),
+        ("Bank Submission 2nd", "REGISTRATION", True, None),
+    ],
+    "ACCOUNTS_2": [("Final Payment Follow-up", "ACCOUNTS", False, None)],
 }
+
+# Installation mandatory photos
+INSTALL_PHOTO_TYPES = ["INVERTER_SERIAL", "INVERTER_WITH_CUSTOMER", "PANEL_WITH_CUSTOMER",
+                       "LIGHTNING_ARRESTER", "EARTHING_PIT"]
+INSTALL_PHOTO_LABELS = {
+    "INVERTER_SERIAL": "Inverter Serial Number",
+    "INVERTER_WITH_CUSTOMER": "Inverter alongside Customer",
+    "PANEL_WITH_CUSTOMER": "Solar Panel alongside Customer",
+    "LIGHTNING_ARRESTER": "Lightning Arrester",
+    "EARTHING_PIT": "Earthing Pit",
+}
+PHOTO_ALLOWED_CONTENT_TYPES = {"image/jpeg", "image/png"}
+
+# Complaint constants
+COMPLAINT_PRIORITIES = ["LOW", "MEDIUM", "HIGH", "CRITICAL"]
+COMPLAINT_STATUSES = ["REGISTERED", "ASSIGNED", "IN_PROGRESS", "RESOLVED", "CLOSED"]
+COMPLAINT_TEAMS = ["LEAD", "REGISTRATION", "ACCOUNTS", "DISPATCH", "INSTALLATION"]
+
+INSTALL_MEMBER_ROLES = {"INSTALLATION", "INSTALLATION_MEMBER"}
+INSTALL_MANAGER_ROLES = {"INSTALLATION_MANAGER", "MANAGER", "OWNER"}
 
 LEAD_ACTIONS = ["YES", "NO", "FOLLOW_UP", "SITE_VISIT", "ESCALATION"]
 

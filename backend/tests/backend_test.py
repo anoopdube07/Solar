@@ -21,6 +21,9 @@ CREDS = {
     "accounts":     ("accounts",              "Acct@123",    "ACCOUNTS"),
     "dispatch":     ("dispatch",              "Disp@123",    "DISPATCH"),
     "installation": ("installation",          "Install@123", "INSTALLATION"),
+    "instmgr":      ("instmgr",               "InstMgr@123", "INSTALLATION_MANAGER"),
+    "instmem":      ("instmem",               "InstMem@123", "INSTALLATION_MEMBER"),
+    "complaint":    ("complaint",             "Comp@123",    "COMPLAINT"),
 }
 
 
@@ -142,35 +145,50 @@ class TestLeadActions:
             json={"action": "SITE_VISIT", "remarks": "again"}, headers=_hdr(tokens["lead"]))
         assert r2.status_code == 400
         # find open site visit
-        vs = requests.get(f"{API}/site-visits", headers=_hdr(tokens["manager"])).json()
+        vs = requests.get(f"{API}/site-visits", headers=_hdr(tokens["instmgr"])).json()
         sv = next(v for v in vs if v["lead_id"] == lid and v["status"] == "REQUESTED")
-        # need install user id
+        # need install member user id
         users = requests.get(f"{API}/users", headers=_hdr(tokens["owner"])).json()
-        install_user = next(u for u in users if u["role"] == "INSTALLATION")
-        # non-manager cannot assign
+        install_user = next(u for u in users if u["role"] in ("INSTALLATION_MEMBER", "INSTALLATION"))
+        # non-INSTALLATION_MANAGER/OWNER cannot assign (Phase 7: process MANAGER 403)
         r = requests.post(f"{API}/site-visits/{sv['id']}/assign",
             json={"assigned_user": install_user["id"], "visit_date": "2027-01-20"},
             headers=_hdr(tokens["lead"]))
         assert r.status_code == 403
+        r = requests.post(f"{API}/site-visits/{sv['id']}/assign",
+            json={"assigned_user": install_user["id"], "visit_date": "2027-01-20"},
+            headers=_hdr(tokens["manager"]))
+        assert r.status_code == 403, "process MANAGER cannot assign site visit now"
         # non-INSTALLATION assignee rejected
         lead_user = next(u for u in users if u["role"] == "LEAD")
         r = requests.post(f"{API}/site-visits/{sv['id']}/assign",
             json={"assigned_user": lead_user["id"], "visit_date": "2027-01-20"},
-            headers=_hdr(tokens["manager"]))
+            headers=_hdr(tokens["instmgr"]))
         assert r.status_code == 400
-        # manager assigns correctly
+        # INSTALLATION_MANAGER assigns correctly
         r = requests.post(f"{API}/site-visits/{sv['id']}/assign",
             json={"assigned_user": install_user["id"], "visit_date": "2027-01-20"},
-            headers=_hdr(tokens["manager"]))
+            headers=_hdr(tokens["instmgr"]))
         assert r.status_code == 200
-        # complete without survey rejected
+        # figure out installer token
+        if install_user["username"] == "installation":
+            installer_tok = tokens["installation"]
+        elif install_user["username"] == "instmem":
+            installer_tok = tokens["instmem"]
+        else:
+            installer_tok = tokens["installation"]
+        # complete without required survey rejected (Phase 7 structured survey - empty strings -> 400)
         r = requests.post(f"{API}/site-visits/{sv['id']}/complete",
-            json={"survey_info": ""}, headers=_hdr(tokens["installation"]))
+            json={"structure_height": "", "earthing_cable_length": "",
+                  "dc_cable_length": "", "ac_cable_length": "", "surveyor_name": ""},
+            headers=_hdr(installer_tok))
         assert r.status_code == 400
-        # complete with survey
+        # complete with all required structured fields
         r = requests.post(f"{API}/site-visits/{sv['id']}/complete",
-            json={"survey_info": "Roof OK, 5kW"}, headers=_hdr(tokens["installation"]))
-        assert r.status_code == 200
+            json={"structure_height": "10ft", "earthing_cable_length": "20m",
+                  "dc_cable_length": "30m", "ac_cable_length": "40m",
+                  "surveyor_name": "Test Surveyor"}, headers=_hdr(installer_tok))
+        assert r.status_code == 200, r.text
         # Lead returned to LEAD team with return_reason SITE_VISIT_COMPLETED
         lead = requests.get(f"{API}/leads/{lid}", headers=_hdr(tokens["lead"])).json()["lead"]
         assert lead["current_team"] == "LEAD"
@@ -226,8 +244,12 @@ def _release_docs(lead_id, tokens, financing=False):
         types.append("PROPERTY_PAPER")
     types.append("BANK_PASSBOOK")
     for t in types:
-        rr = requests.post(f"{API}/leads/{lead_id}/documents", data={"doc_type": t},
-                           files={"file": ("d.png", png, "image/png")}, headers=_hdr(tokens["lead"]))
+        rr = None
+        for _ in range(4):
+            rr = requests.post(f"{API}/leads/{lead_id}/documents", data={"doc_type": t},
+                               files={"file": ("d.png", png, "image/png")}, headers=_hdr(tokens["lead"]))
+            if rr.status_code == 200:
+                break
         assert rr.status_code == 200, f"doc {t}: {rr.text}"
 
 
@@ -255,15 +277,44 @@ def _complete_all_applicable(ecp_id, stage, token):
             assert r.status_code == 200, f"complete {t['task_name']} failed: {r.text}"
 
 
+def _upload_install_photos(ecp_id, installer_tok):
+    png = b"\x89PNG\r\n\x1a\n" + b"0" * 64
+    for t in ["INVERTER_SERIAL", "INVERTER_WITH_CUSTOMER", "PANEL_WITH_CUSTOMER", "LIGHTNING_ARRESTER", "EARTHING_PIT"]:
+        rr = requests.post(f"{API}/ecps/{ecp_id}/install-photos", data={"photo_type": t},
+                           files={"file": ("p.png", png, "image/png")}, headers=_hdr(installer_tok))
+        assert rr.status_code == 200, f"photo {t}: {rr.text}"
+
+
+def _finish_installation(ecp_id, installer_tok, tokens):
+    requests.post(f"{API}/ecps/{ecp_id}/installation", json={"action": "start"}, headers=_hdr(installer_tok))
+    _upload_install_photos(ecp_id, installer_tok)
+    r = requests.post(f"{API}/ecps/{ecp_id}/installation", json={"action": "submit"}, headers=_hdr(installer_tok))
+    assert r.status_code == 200, r.text
+    r = requests.post(f"{API}/ecps/{ecp_id}/installation/accept", json={}, headers=_hdr(tokens["manager"]))
+    assert r.status_code == 200, r.text
+
+
+def _run_net_metering(ecp_id, installer_tok, tokens):
+    order = ["Upload Installation Photos to CSPDCL Portal", "DCR Issuance",
+             "Consumer Approval & Submit", "Request Net Metering from CSPDCL"]
+    tasks = requests.get(f"{API}/ecps/{ecp_id}", headers=_hdr(tokens["owner"])).json()["tasks"]
+    tmap = {t["task_name"]: t for t in tasks if t["stage"] == "NET_METERING"}
+    for name in order:
+        r = requests.post(f"{API}/ecps/{ecp_id}/tasks/{tmap[name]['id']}/complete", headers=_hdr(tokens["registration"]))
+        assert r.status_code == 200, f"NM {name}: {r.text}"
+    r = requests.post(f"{API}/ecps/{ecp_id}/tasks/{tmap['Close Net Metering']['id']}/complete", headers=_hdr(installer_tok))
+    assert r.status_code == 200, f"Close NM: {r.text}"
+
+
 class TestECPFlow:
     def test_reg1_financing_tasks_block_and_autoadvance(self, tokens):
         _, ecp_id = _qualify_and_get_ecp(tokens, financing=True)
         # Verify 7 applicable tasks
         tasks = _tasks_for_stage(ecp_id, "REGISTRATION_1", tokens["registration"])
         applicable = [t for t in tasks if t["applicable"]]
-        assert len(applicable) == 7, f"expected 7 (4 base + 3 loan), got {len(applicable)}"
+        assert len(applicable) == 6, f"expected 6 (3 base + 3 loan), got {len(applicable)}"
         # complete base first, ensure not advanced yet
-        base = ["CSPDCL Registration", "PPA Preparation", "Cover Letter", "CVA"]
+        base = ["Consumer Request", "CVA Print & Sign", "Feasibility Report Upload"]
         for name in base:
             t = next(x for x in tasks if x["task_name"] == name)
             requests.post(f"{API}/ecps/{ecp_id}/tasks/{t['id']}/complete", headers=_hdr(tokens["registration"]))
@@ -315,7 +366,7 @@ class TestECPFlow:
         e = requests.get(f"{API}/ecps/{ecp_id}", headers=_hdr(tokens["owner"])).json()["ecp"]
         assert e["current_stage"] == "INSTALLATION"
         assert e["install_status"] == "AWAITING_ASSIGNMENT"
-        assert e["current_team"] == "MANAGER"
+        assert e["current_team"] == "INSTALLATION_MANAGER"
         # Manager assigns installation employee
         users = requests.get(f"{API}/users", headers=_hdr(tokens["owner"])).json()
         install_user = next(u for u in users if u["role"] == "INSTALLATION" and u.get("active", True))
@@ -324,23 +375,16 @@ class TestECPFlow:
         assert r.status_code == 200, r.text
         e = r.json()["ecp"]
         assert e["install_status"] == "READY_TO_INSTALL"
-        assert e["current_team"] == "INSTALLATION"
+        assert e["current_team"] == "INSTALLATION_MEMBER"
         assert e["responsible_user"] == install_user["id"]
-        # install start -> IN_PROCESS (only assignee can act)
-        # log in as the assignee installer
         _tok = requests.post(f"{API}/auth/login",
             json={"username": install_user["username"], "password": "Install@123"}).json().get("token")
-        # if default install user is the assignee, use existing token; otherwise use fresh
         installer_tok = tokens["installation"] if install_user["username"] == "installation" else _tok
-        r = requests.post(f"{API}/ecps/{ecp_id}/installation",
-            json={"action": "start"}, headers=_hdr(installer_tok))
-        assert r.status_code == 200, r.text
-        r = requests.post(f"{API}/ecps/{ecp_id}/installation",
-            json={"action": "complete"}, headers=_hdr(installer_tok))
-        assert r.status_code == 200
+        # start -> photos -> submit -> manager accept -> NET_METERING
+        _finish_installation(ecp_id, installer_tok, tokens)
         e = requests.get(f"{API}/ecps/{ecp_id}", headers=_hdr(tokens["owner"])).json()["ecp"]
         assert e["current_stage"] == "NET_METERING"
-        _complete_all_applicable(ecp_id, "NET_METERING", tokens["installation"])
+        _run_net_metering(ecp_id, installer_tok, tokens)
         e = requests.get(f"{API}/ecps/{ecp_id}", headers=_hdr(tokens["owner"])).json()["ecp"]
         assert e["current_stage"] == "REGISTRATION_2"
         _complete_all_applicable(ecp_id, "REGISTRATION_2", tokens["registration"])

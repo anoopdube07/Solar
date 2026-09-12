@@ -6,6 +6,8 @@ import { PageHeader } from "@/components/ui-bits";
 import { StatusBadge, DelayedBadge } from "@/components/StatusBadge";
 import { STAGE_ORDER, STAGE_LABELS, DERIVED_LABELS } from "@/lib/constants";
 import { DocumentsPanel } from "@/components/DocumentsPanel";
+import { InstallationWork } from "@/components/InstallationWork";
+import { DeliveryChallanPanel } from "@/components/DeliveryChallanPanel";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -173,16 +175,10 @@ export default function ECPDetail() {
 
                 {stage === "INSTALLATION" ? (
                   <div className="space-y-3">
-                    <div className="text-sm">Installation status: <StatusBadge value={ecp.install_status} label={DERIVED_LABELS[ecp.install_status]} /></div>
-                    {ecp.responsible_user_name && <div className="text-sm text-slate-600">Assigned to: <b>{ecp.responsible_user_name}</b></div>}
                     {ecp.install_status === "AWAITING_ASSIGNMENT" && canAssignInstall && (
-                      <Button data-testid="assign-install-button" onClick={() => setAssignDlg(true)} className="bg-sky-600 hover:bg-sky-700"><UserPlus size={16} className="mr-1.5" /> Assign Installation Employee</Button>
+                      <Button data-testid="assign-install-button" onClick={() => setAssignDlg(true)} className="bg-sky-600 hover:bg-sky-700"><UserPlus size={16} className="mr-1.5" /> Assign Installation Member</Button>
                     )}
-                    {ecp.install_status === "AWAITING_ASSIGNMENT" && !canAssignInstall && (
-                      <p className="text-sm text-amber-600 font-medium">Awaiting Manager to assign an installation employee.</p>
-                    )}
-                    {isStageTeam && ecp.install_status === "READY_TO_INSTALL" && <Button data-testid="install-start-button" onClick={() => installAction("start")} className="bg-sky-600 hover:bg-sky-700"><Wrench size={16} className="mr-1.5" /> Start Installation</Button>}
-                    {isStageTeam && ecp.install_status === "IN_PROCESS" && <Button data-testid="install-complete-button" onClick={() => installAction("complete")} className="bg-emerald-600 hover:bg-emerald-700"><CheckCircle2 size={16} className="mr-1.5" /> Complete Installation</Button>}
+                    <InstallationWork ecp={ecp} onChange={load} />
                   </div>
                 ) : (
                   <ul className="space-y-2">
@@ -198,6 +194,10 @@ export default function ECPDetail() {
                 )}
                 {!isStageTeam && !(stage === "INSTALLATION" && canAssignInstall) && <p className="text-xs text-slate-400 mt-3">Read-only — this stage is owned by {ecp.current_team}.</p>}
               </Card>
+            )}
+
+            {(stage === "DISPATCH" && (user.role === "DISPATCH" || user.role === "OWNER" || user.role === "MANAGER")) && (
+              <DeliveryChallanPanel ecpId={ecp.id} canEdit={user.role === "DISPATCH" || user.role === "OWNER"} />
             )}
 
             {/* financing */}

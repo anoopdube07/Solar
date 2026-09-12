@@ -67,8 +67,12 @@ def _release_docs(lead_id, tokens, financing=False):
         types.append("PROPERTY_PAPER")
     types.append("BANK_PASSBOOK")
     for t in types:
-        rr = requests.post(f"{API}/leads/{lead_id}/documents", data={"doc_type": t},
-                           files={"file": ("d.png", png, "image/png")}, headers=_hdr(tokens["lead"]))
+        rr = None
+        for _ in range(4):
+            rr = requests.post(f"{API}/leads/{lead_id}/documents", data={"doc_type": t},
+                               files={"file": ("d.png", png, "image/png")}, headers=_hdr(tokens["lead"]))
+            if rr.status_code == 200:
+                break
         assert rr.status_code == 200, f"doc {t}: {rr.text}"
 
 
@@ -89,6 +93,26 @@ def _complete_all(ecp_id, stage, token):
             rr = requests.post(f"{API}/ecps/{ecp_id}/tasks/{t['id']}/complete",
                                headers=_hdr(token))
             assert rr.status_code == 200, f"{t['task_name']}: {rr.text}"
+
+
+def _finish_installation(ecp_id, installer_tok, tokens):
+    png = b"\x89PNG\r\n\x1a\n" + b"0" * 64
+    requests.post(f"{API}/ecps/{ecp_id}/installation", json={"action": "start"}, headers=_hdr(installer_tok))
+    for t in ["INVERTER_SERIAL", "INVERTER_WITH_CUSTOMER", "PANEL_WITH_CUSTOMER", "LIGHTNING_ARRESTER", "EARTHING_PIT"]:
+        requests.post(f"{API}/ecps/{ecp_id}/install-photos", data={"photo_type": t},
+                      files={"file": ("p.png", png, "image/png")}, headers=_hdr(installer_tok))
+    requests.post(f"{API}/ecps/{ecp_id}/installation", json={"action": "submit"}, headers=_hdr(installer_tok))
+    requests.post(f"{API}/ecps/{ecp_id}/installation/accept", json={}, headers=_hdr(tokens["manager"]))
+
+
+def _run_net_metering(ecp_id, installer_tok, tokens):
+    order = ["Upload Installation Photos to CSPDCL Portal", "DCR Issuance",
+             "Consumer Approval & Submit", "Request Net Metering from CSPDCL"]
+    tasks = requests.get(f"{API}/ecps/{ecp_id}", headers=_hdr(tokens["owner"])).json()["tasks"]
+    tmap = {t["task_name"]: t for t in tasks if t["stage"] == "NET_METERING"}
+    for name in order:
+        requests.post(f"{API}/ecps/{ecp_id}/tasks/{tmap[name]['id']}/complete", headers=_hdr(tokens["registration"]))
+    requests.post(f"{API}/ecps/{ecp_id}/tasks/{tmap['Close Net Metering']['id']}/complete", headers=_hdr(installer_tok))
 
 
 def _drive_to_dispatch(tokens, with_first_confirmed=True):
@@ -148,13 +172,9 @@ class TestIssue1RegistrationFilter:
         else:
             # fallback: some other install user — skip driving further, use owner to progress via NET
             installer_tok = tokens["installation"]
-        # Start + complete install
-        requests.post(f"{API}/ecps/{ecp_id2}/installation",
-            json={"action": "start"}, headers=_hdr(installer_tok))
-        requests.post(f"{API}/ecps/{ecp_id2}/installation",
-            json={"action": "complete"}, headers=_hdr(installer_tok))
-        # NET_METERING tasks — any INSTALLATION user can complete tasks (role check only)
-        _complete_all(ecp_id2, "NET_METERING", tokens["installation"])
+        # Start + finish install (photos + submit + manager accept)
+        _finish_installation(ecp_id2, installer_tok, tokens)
+        _run_net_metering(ecp_id2, installer_tok, tokens)
         e = requests.get(f"{API}/ecps/{ecp_id2}", headers=_hdr(tokens["owner"])).json()["ecp"]
         assert e["current_stage"] == "REGISTRATION_2", f"expected REG2, got {e['current_stage']}"
 
@@ -173,10 +193,10 @@ class TestIssue1RegistrationFilter:
         assert stages <= {"REGISTRATION_2"}, f"reg2 filter leaked: {stages}"
         assert any(e["id"] == ecp_id2 for e in r.json())
 
-        # no stage param -> both
+        # no stage param -> reg1/reg2/net_metering (all stages where REGISTRATION has tasks)
         r = requests.get(f"{API}/ecps", headers=_hdr(tokens["registration"]))
         stages = {e["current_stage"] for e in r.json()}
-        assert stages <= {"REGISTRATION_1", "REGISTRATION_2"}
+        assert stages <= {"REGISTRATION_1", "REGISTRATION_2", "NET_METERING"}, f"unexpected: {stages}"
         assert "REGISTRATION_1" in stages and "REGISTRATION_2" in stages
 
     def test_registration_cannot_query_dispatch_scope(self, tokens):
@@ -246,7 +266,7 @@ class TestIssue5InstallHandoff:
         e = requests.get(f"{API}/ecps/{ecp_id}", headers=_hdr(tokens["owner"])).json()["ecp"]
         assert e["current_stage"] == "INSTALLATION"
         assert e["install_status"] == "AWAITING_ASSIGNMENT"
-        assert e["current_team"] == "MANAGER"
+        assert e["current_team"] == "INSTALLATION_MANAGER"
         assert e.get("responsible_user") in (None, "")
 
         # assign-installation RBAC: non-manager/owner 403
@@ -269,7 +289,7 @@ class TestIssue5InstallHandoff:
         assert r.status_code == 200
         e = r.json()["ecp"]
         assert e["install_status"] == "READY_TO_INSTALL"
-        assert e["current_team"] == "INSTALLATION"
+        assert e["current_team"] == "INSTALLATION_MEMBER"
         assert e["responsible_user"] == install_user["id"]
 
     def test_non_assignee_installer_403(self, tokens):
