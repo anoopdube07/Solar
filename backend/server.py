@@ -127,7 +127,7 @@ async def list_users(user: dict = Depends(get_current_user)):
 
 @api.get("/users/team/{role}")
 async def list_team_users(role: str, user: dict = Depends(get_current_user)):
-    require(user, "OWNER", "MANAGER")
+    require(user, "OWNER", "MANAGER", "INSTALLATION_MANAGER")
     if role not in wf.ROLES:
         raise HTTPException(status_code=400, detail="Invalid role")
     users = await db.users.find({"role": role, "active": True}, NO_ID).to_list(1000)
@@ -2303,6 +2303,61 @@ async def download_complaint_attachment(cid: str, att_id: str, user: dict = Depe
     content, ct = get_object(a["storage_path"])
     return Response(content=content, media_type=a.get("content_type") or ct,
                     headers={"Content-Disposition": f'inline; filename="{a.get("original_filename", "file")}"'})
+
+
+@api.post("/site-visits/{sv_id}/photos")
+async def upload_sv_photo(sv_id: str, file: UploadFile = File(...), lat: str = Form(None), lng: str = Form(None),
+                          user: dict = Depends(get_current_user)):
+    require(user, "INSTALLATION", "INSTALLATION_MEMBER", "OWNER")
+    sv = await db.lead_site_visits.find_one({"id": sv_id}, NO_ID)
+    if not sv:
+        raise HTTPException(status_code=404, detail="Site visit not found")
+    if user["role"] in wf.INSTALL_MEMBER_ROLES and sv.get("assigned_user") != user["id"]:
+        raise HTTPException(status_code=403, detail="This site visit is not assigned to you")
+    count = await db.site_visit_photos.count_documents({"sv_id": sv_id})
+    if count >= 3:
+        raise HTTPException(status_code=400, detail="Maximum 3 photos allowed")
+    ct = (file.content_type or "").lower()
+    if ct not in wf.PHOTO_ALLOWED_CONTENT_TYPES:
+        raise HTTPException(status_code=400, detail="Only JPG or PNG photos are allowed")
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty file")
+    if len(data) > wf.DOC_MAX_BYTES:
+        raise HTTPException(status_code=400, detail="File too large (max 10 MB)")
+    path = f"{APP_NAME}/site_visit_photos/{sv_id}/{new_id()}.{'png' if 'png' in ct else 'jpg'}"
+    result = put_object(path, data, ct)
+    geo = None
+    if lat and lng:
+        try:
+            geo = {"lat": float(lat), "lng": float(lng)}
+        except ValueError:
+            geo = None
+    doc = {"id": new_id(), "sv_id": sv_id, "lead_id": sv.get("lead_id"), "storage_path": result.get("path", path),
+           "content_type": ct, "geo": geo, "uploaded_by_name": user["name"], "uploaded_at": now_iso()}
+    await db.site_visit_photos.insert_one(doc)
+    return {k: v for k, v in doc.items() if k != "_id"}
+
+
+@api.get("/site-visits/{sv_id}/photos")
+async def list_sv_photos(sv_id: str, user: dict = Depends(get_current_user)):
+    sv = await db.lead_site_visits.find_one({"id": sv_id}, NO_ID)
+    if not sv:
+        raise HTTPException(status_code=404, detail="Site visit not found")
+    if user["role"] not in {"OWNER", "MANAGER", "LEAD", "INSTALLATION_MANAGER"} | wf.INSTALL_MEMBER_ROLES:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    return {"photos": await db.site_visit_photos.find({"sv_id": sv_id}, NO_ID).to_list(10)}
+
+
+@api.get("/site-visits/{sv_id}/photos/{photo_id}/download")
+async def download_sv_photo(sv_id: str, photo_id: str, user: dict = Depends(get_current_user)):
+    if user["role"] not in {"OWNER", "MANAGER", "LEAD", "INSTALLATION_MANAGER"} | wf.INSTALL_MEMBER_ROLES:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    p = await db.site_visit_photos.find_one({"id": photo_id, "sv_id": sv_id}, NO_ID)
+    if not p:
+        raise HTTPException(status_code=404, detail="Photo not found")
+    content, ct = get_object(p["storage_path"])
+    return Response(content=content, media_type=p.get("content_type") or ct)
 
 
 app.include_router(api)
