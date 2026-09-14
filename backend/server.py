@@ -952,6 +952,10 @@ async def complete_task(ecp_id: str, task_id: str, user: dict = Depends(get_curr
             raise HTTPException(status_code=400, detail="Manager-approved installation photos are not available yet")
     if task["stage"] == "DISPATCH" and not ecp.get("dispatch_started"):
         raise HTTPException(status_code=400, detail="Start Dispatch before completing dispatch tasks")
+    if task["task_name"] == "Delivery Challan" and task["stage"] == "DISPATCH":
+        ch = await db.delivery_challans.find_one({"ecp_id": ecp_id}, NO_ID)
+        if not ch or ch.get("status") != "FINALIZED" or not ch.get("items"):
+            raise HTTPException(status_code=400, detail="Finalize the Delivery Challan before marking the task complete")
     await db.ecp_tasks.update_one({"id": task_id}, {"$set": {
         "completed": True, "completed_by": user["id"], "completed_by_name": user["name"],
         "completed_at": now_iso()}})

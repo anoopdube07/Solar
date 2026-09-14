@@ -70,8 +70,8 @@ STAGE_TASK_SPECS = {
     "ACCOUNTS_1": [("Advance Verification", "ACCOUNTS", False, None)],
     "DISPATCH": [
         ("Delivery Challan", "DISPATCH", False, None),
-        ("Material Dispatch Confirmation", "DISPATCH", False, None),
-        ("Dispatch Completed", "DISPATCH", False, None),
+        ("Material Dispatch Confirmation", "DISPATCH", False, "Delivery Challan"),
+        ("Dispatch Completed", "DISPATCH", False, "Material Dispatch Confirmation"),
     ],
     "NET_METERING": [
         ("Upload Installation Photos to CSPDCL Portal", "REGISTRATION", False, None),
