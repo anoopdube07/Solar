@@ -15,7 +15,6 @@ import Payments from "@/pages/Payments";
 import Users from "@/pages/Users";
 import SLAConfig from "@/pages/SLAConfig";
 import WorkDone from "@/pages/WorkDone";
-import LeadEmployees from "@/pages/LeadEmployees";
 import ItemMaster from "@/pages/ItemMaster";
 import LeadFieldConfig from "@/pages/LeadFieldConfig";
 import Complaints from "@/pages/Complaints";
@@ -45,7 +44,6 @@ function App() {
             <Route path="/users" element={<Protected><Users /></Protected>} />
             <Route path="/sla" element={<Protected><SLAConfig /></Protected>} />
             <Route path="/work-done" element={<Protected><WorkDone /></Protected>} />
-            <Route path="/lead-employees" element={<Protected><LeadEmployees /></Protected>} />
             <Route path="/items" element={<Protected><ItemMaster /></Protected>} />
             <Route path="/lead-fields" element={<Protected><LeadFieldConfig /></Protected>} />
             <Route path="/complaints" element={<Protected><Complaints /></Protected>} />
