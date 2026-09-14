@@ -1155,16 +1155,22 @@ async def create_payment(body: PaymentCreate, user: dict = Depends(get_current_u
     ecp = await db.ecps.find_one({"id": body.ecp_id}, NO_ID)
     if not ecp:
         raise HTTPException(status_code=404, detail="ECP not found")
-    if body.type not in ("FIRST", "ADDITIONAL", "FINAL"):
+    if body.type not in ("FIRST", "ADDITIONAL"):
         raise HTTPException(status_code=400, detail="Invalid payment type")
     if body.status not in ("PENDING", "CONFIRMED"):
         raise HTTPException(status_code=400, detail="Invalid payment status")
-    if body.type in ("FIRST", "FINAL"):
+    if body.type == "FIRST":
         exists = await db.payments.find_one({"ecp_id": body.ecp_id, "type": body.type})
         if exists:
             raise HTTPException(status_code=400, detail=f"{body.type} payment already exists for this ECP")
     if (body.date or "")[:10] > ist_today_str():
         raise HTTPException(status_code=400, detail="Payment date cannot be in the future")
+    # Project-value ceiling: existing (PENDING + CONFIRMED) + new must not exceed project_price
+    price = float(ecp.get("project_price") or 0)
+    existing = await db.payments.find({"ecp_id": body.ecp_id}, NO_ID).to_list(1000)
+    existing_sum = sum(float(p.get("amount") or 0) for p in existing)
+    if existing_sum + float(body.amount) > price:
+        raise HTTPException(status_code=400, detail=f"Total payments (₹{existing_sum + float(body.amount):,.0f}) would exceed the project price (₹{price:,.0f})")
     doc = {
         "id": new_id(), "ecp_id": body.ecp_id, "type": body.type, "amount": float(body.amount),
         "date": body.date, "status": body.status, "remarks": (body.remarks or "").strip(),
@@ -1186,6 +1192,12 @@ async def update_payment(payment_id: str, body: PaymentUpdate, user: dict = Depe
         raise HTTPException(status_code=404, detail="Payment not found")
     upd = {"updated_by": user["id"], "updated_by_name": user["name"], "updated_at": now_iso()}
     if body.amount is not None:
+        ecp = await db.ecps.find_one({"id": pay["ecp_id"]}, NO_ID)
+        price = float((ecp or {}).get("project_price") or 0)
+        others = await db.payments.find({"ecp_id": pay["ecp_id"], "id": {"$ne": payment_id}}, NO_ID).to_list(1000)
+        others_sum = sum(float(p.get("amount") or 0) for p in others)
+        if others_sum + float(body.amount) > price:
+            raise HTTPException(status_code=400, detail=f"Total payments (₹{others_sum + float(body.amount):,.0f}) would exceed the project price (₹{price:,.0f})")
         upd["amount"] = float(body.amount)
     if body.date is not None:
         if (body.date or "")[:10] > ist_today_str():
