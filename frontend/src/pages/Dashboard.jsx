@@ -105,9 +105,9 @@ function OwnerCommandCenter({ d, go, onReviewCommercial, pendingCommCount, activ
     { icon: Building2, value: ecp.ACTIVE, label: "Active ECP Projects", iconCls: "bg-sky-50 text-sky-600", route: "/ecps" },
     { icon: Users2, value: leads.PENDING, label: "Pending Leads", iconCls: "bg-amber-50 text-amber-600", route: "/leads?status=PENDING" },
     { icon: Target, value: leads.QUALIFIED, label: "Qualified Leads", iconCls: "bg-emerald-50 text-emerald-600", route: "/leads?status=QUALIFIED" },
-    { icon: CreditCard, value: ecp.PAYMENT_BLOCKED, label: "Payment Blocked", iconCls: "bg-red-50 text-red-600", route: "/ecps?stage=DISPATCH" },
-    { icon: Clock, value: ecp.DELAYED, label: "Delayed Projects", iconCls: "bg-orange-50 text-orange-600", route: "/ecps" },
-    { icon: Trophy, value: ecp.COMPLETED, label: "Successfully Completed", iconCls: "bg-emerald-50 text-emerald-600", route: "/ecps" },
+    { icon: CreditCard, value: ecp.PAYMENT_BLOCKED, label: "Payment Blocked", iconCls: "bg-red-50 text-red-600", route: "/ecps?view=PAYMENT_BLOCKED" },
+    { icon: Clock, value: ecp.DELAYED, label: "Delayed Projects", iconCls: "bg-orange-50 text-orange-600", route: "/ecps?view=DELAYED" },
+    { icon: Trophy, value: ecp.COMPLETED, label: "Successfully Completed", iconCls: "bg-emerald-50 text-emerald-600", route: "/ecps?view=COMPLETED" },
   ];
 
   const pipe = [
@@ -134,8 +134,8 @@ function OwnerCommandCenter({ d, go, onReviewCommercial, pendingCommCount, activ
             </div>
           </div>
         </button>
-        <div className="lg:col-span-2"><AlertTile testid="attn-payment-blocked" icon={AlertTriangle} tone="red" value={ecp.PAYMENT_BLOCKED} label="Payment Blocked" onClick={go("/ecps?stage=DISPATCH")} /></div>
-        <div className="lg:col-span-2"><AlertTile testid="attn-delayed" icon={Clock} tone="amber" value={ecp.DELAYED} label="Delayed Projects" onClick={go("/ecps")} /></div>
+        <div className="lg:col-span-2"><AlertTile testid="attn-payment-blocked" icon={AlertTriangle} tone="red" value={ecp.PAYMENT_BLOCKED} label="Payment Blocked" onClick={go("/ecps?view=PAYMENT_BLOCKED")} /></div>
+        <div className="lg:col-span-2"><AlertTile testid="attn-delayed" icon={Clock} tone="amber" value={ecp.DELAYED} label="Delayed Projects" onClick={go("/ecps?view=DELAYED")} /></div>
         <div className="lg:col-span-2"><AlertTile testid="attn-escalated" icon={Users2} tone="indigo" value={leads.ESCALATED} label="Escalated Leads" onClick={go("/leads?status=ESCALATED")} /></div>
       </div>
 
@@ -203,23 +203,23 @@ function OwnerCommandCenter({ d, go, onReviewCommercial, pendingCommCount, activ
             [ecp.ACCOUNTS_1, "Accounts 1", go("/ecps?stage=ACCOUNTS_1"), "ecp-accounts-1"],
           ]} />
           <EcpColumn title="Dispatch" icon={Truck} headerCls="bg-amber-50 text-amber-700" rows={[
-            [ecp.PAYMENT_BLOCKED, "Payment Blocked", go("/ecps?stage=DISPATCH"), "ecp-payment-blocked"],
-            [ecp.READY_FOR_DISPATCH, "Ready for Dispatch", go("/ecps?stage=DISPATCH"), "ecp-ready-for-dispatch"],
-            [ecp.DISPATCH_IN_PROCESS, "Dispatch In Process", go("/ecps?stage=DISPATCH"), "ecp-dispatch-in-process"],
+            [ecp.PAYMENT_BLOCKED, "Payment Blocked", go("/ecps?view=PAYMENT_BLOCKED"), "ecp-payment-blocked"],
+            [ecp.READY_FOR_DISPATCH, "Ready for Dispatch", go("/ecps?view=READY_FOR_DISPATCH"), "ecp-ready-for-dispatch"],
+            [ecp.DISPATCH_IN_PROCESS, "Dispatch In Process", go("/ecps?view=DISPATCH_IN_PROCESS"), "ecp-dispatch-in-process"],
           ]} />
           <EcpColumn title="Installation" icon={Wrench} headerCls="bg-teal-50 text-teal-700" rows={[
-            [ecp.READY_TO_INSTALL, "Ready to Install", go("/ecps?stage=INSTALLATION"), "ecp-ready-to-install"],
-            [ecp.INSTALLATION_IN_PROCESS, "Installation In Process", go("/ecps?stage=INSTALLATION"), "ecp-installation-in-process"],
+            [ecp.READY_TO_INSTALL, "Ready to Install", go("/ecps?view=READY_TO_INSTALL"), "ecp-ready-to-install"],
+            [ecp.INSTALLATION_IN_PROCESS, "Installation In Process", go("/ecps?view=IN_PROCESS"), "ecp-installation-in-process"],
             [ecp.NET_METERING, "Net Metering", go("/ecps?stage=NET_METERING"), "ecp-net-metering"],
           ]} />
           <EcpColumn title="Completion" icon={CheckCircle2} headerCls="bg-indigo-50 text-indigo-700" rows={[
             [ecp.REGISTRATION_2, "Registration 2", go("/ecps?stage=REGISTRATION_2"), "ecp-registration-2"],
             [ecp.ACCOUNTS_2, "Accounts 2", go("/ecps?stage=ACCOUNTS_2"), "ecp-accounts-2"],
-            [ecp.COMPLETED, "Successfully Completed", go("/ecps"), "ecp-completed"],
-            [ecp.CLOSED, "Closed / Cancelled", go("/ecps"), "ecp-closed"],
+            [ecp.COMPLETED, "Successfully Completed", go("/ecps?view=COMPLETED"), "ecp-completed"],
+            [ecp.CLOSED, "Closed / Cancelled", go("/ecps?view=CLOSED"), "ecp-closed"],
           ]} />
           <EcpColumn title="Attention" icon={ShieldAlert} headerCls="bg-red-50 text-red-700" rows={[
-            [ecp.DELAYED, "Delayed Projects", go("/ecps"), "ecp-delayed"],
+            [ecp.DELAYED, "Delayed Projects", go("/ecps?view=DELAYED"), "ecp-delayed"],
           ]} />
         </div>
       </div>

@@ -12,6 +12,24 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 
 // Filter options per role: [value, label, {stage|view}]
 const FILTERS = {
+  OWNER: [
+    ["ALL", "All", {}],
+    ["PENDING_DOCUMENTS", "Pending Documents", { stage: "PENDING_DOCUMENTS" }],
+    ["REGISTRATION_1", "Registration 1", { stage: "REGISTRATION_1" }],
+    ["ACCOUNTS_1", "Accounts 1", { stage: "ACCOUNTS_1" }],
+    ["PAYMENT_BLOCKED", "Payment Blocked", { view: "PAYMENT_BLOCKED" }],
+    ["READY_FOR_DISPATCH", "Ready for Dispatch", { view: "READY_FOR_DISPATCH" }],
+    ["DISPATCH_IN_PROCESS", "Dispatch In Process", { view: "DISPATCH_IN_PROCESS" }],
+    ["INSTALLATION", "Installation", { stage: "INSTALLATION" }],
+    ["READY_TO_INSTALL", "Ready to Install", { view: "READY_TO_INSTALL" }],
+    ["IN_PROCESS", "Installation In Process", { view: "IN_PROCESS" }],
+    ["NET_METERING", "Net Metering", { stage: "NET_METERING" }],
+    ["REGISTRATION_2", "Registration 2", { stage: "REGISTRATION_2" }],
+    ["ACCOUNTS_2", "Accounts 2", { stage: "ACCOUNTS_2" }],
+    ["COMPLETED", "Successfully Completed", { view: "COMPLETED" }],
+    ["CLOSED", "Closed / Cancelled", { view: "CLOSED" }],
+    ["DELAYED", "Delayed Projects", { view: "DELAYED" }],
+  ],
   LEAD: [
     ["ALL", "All", {}],
     ["REGISTRATION_1", "Registration 1", { stage: "REGISTRATION_1" }],
