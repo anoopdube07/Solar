@@ -1245,6 +1245,10 @@ async def dashboard(user: dict = Depends(get_current_user)):
     sla_map = await get_sla_map()
     leads = await db.leads.find({}, NO_ID).to_list(5000)
     ecps = await db.ecps.find({}, NO_ID).to_list(5000)
+    if role == "LEAD":
+        _own = (user["id"], None)
+        leads = [l for l in leads if l.get("lead_owner_id") in _own]
+        ecps = [e for e in ecps if e.get("lead_owner_id") in _own]
     for e in ecps:
         await enrich_ecp(e, sla_map)
     payments = await db.payments.find({}, NO_ID).to_list(5000)
@@ -1273,6 +1277,9 @@ async def dashboard(user: dict = Depends(get_current_user)):
         return len([f for f in fus if f["lead_id"] in fu_lead_ids and (f.get("followup_date") or "")[:10] == today])
 
     site_visits = await db.lead_site_visits.find({}, NO_ID).to_list(5000)
+    if role == "LEAD":
+        _lead_ids = {l["id"] for l in leads}
+        site_visits = [s for s in site_visits if s.get("lead_id") in _lead_ids]
 
     data = {"role": role, "role_label": wf.ROLE_LABELS.get(role, role)}
 
