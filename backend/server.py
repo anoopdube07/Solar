@@ -528,7 +528,7 @@ async def lead_action(lead_id: str, body: LeadAction, user: dict = Depends(get_c
             fdate = datetime.fromisoformat(body.followup_date).date()
         except Exception:
             raise HTTPException(status_code=400, detail="Invalid follow-up date")
-        if fdate < datetime.now(timezone.utc).date():
+        if fdate < datetime.fromisoformat(ist_today_str()).date():
             raise HTTPException(status_code=400, detail="Follow-up date cannot be in the past")
         await db.lead_followups.insert_one({
             "id": new_id(), "lead_id": lead_id, "followup_date": body.followup_date,
@@ -1278,9 +1278,10 @@ async def dashboard(user: dict = Depends(get_current_user)):
 
     async def followups_today():
         fus = await db.lead_followups.find({}, NO_ID).to_list(5000)
-        # only count for currently-in-followup leads
+        # only count for currently-in-followup leads (IST business date)
+        ist_today = ist_today_str()
         fu_lead_ids = {l["id"] for l in leads if l["status"] == "FOLLOW_UP"}
-        return len([f for f in fus if f["lead_id"] in fu_lead_ids and (f.get("followup_date") or "")[:10] == today])
+        return len([f for f in fus if f["lead_id"] in fu_lead_ids and (f.get("followup_date") or "")[:10] == ist_today])
 
     site_visits = await db.lead_site_visits.find({}, NO_ID).to_list(5000)
     if role == "LEAD":

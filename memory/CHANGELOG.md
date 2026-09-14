@@ -72,4 +72,8 @@
 - Backend unchanged (PATCH is ACCOUNTS-only, sets amount/date/status/remarks only, never touches current_stage).
 - Verified by testing agent iteration_17: 100% backend + frontend — edit/prefill/save/toast, current_stage unchanged, no duplicate payment, RBAC enforced (OWNER/MANAGER see no button + 403 backend), creation still works. Regression test: `tests/test_payment_edit_scope.py`.
 
+## Bug fix (2026-06) — Lead Follow-up IST business dates
+- `server.py`: FOLLOW_UP action past-date guard now compares against `ist_today_str()` (was UTC `datetime.now(timezone.utc).date()`), and dashboard `followups_today()` counts follow-ups against `ist_today_str()` (was the shared UTC `today`). `list_leads(?followup=today)` already used IST (unchanged). The shared dashboard UTC `today` used by unrelated site-visit/complaint metrics was intentionally left untouched. No stored date-format or data changes.
+- Verified by testing agent iteration_18: 10/10 IST-boundary tests + existing follow-up regression pass — IST-today accepted, IST-yesterday rejected/not-counted, dashboard count consistent with `?followup=today`. Regression test: `tests/test_followup_ist.py`.
+
 ## Prior note: Frontend compiles clean (HTTP 200); Phase 4-10 new-flow UI is wired (Complaints page, InstallationWork, DeliveryChallanPanel, Site Visit survey) but visual QA via the screenshot harness was blocked by an auth-persistence quirk in the preview automation; backend behavior fully verified via automated tests.
