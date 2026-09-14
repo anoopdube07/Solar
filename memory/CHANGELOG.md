@@ -89,3 +89,7 @@
 ## 2026-09-14 — Task 3A: Owner Command Center dashboard redesign
 - Redesigned OWNER dashboard (frontend/src/pages/Dashboard.jsx) from a flat StatCard grid into a command center: Attention Required (Commercial Approvals, Escalated, Payment Blocked, Delayed), Business Overview KPI row, Lead Pipeline flow (Lost separated), grouped ECP Operations (Registration/Dispatch/Installation/Completion), and Payments (First Pending/First Confirmed/Subsequent — Final removed).
 - Reused /dashboard API and existing drill-down routes; no backend changes. Commercial banner + Export CSV preserved. Non-owner dashboards unchanged. Verified via screenshot + drill-down check.
+
+## 2026-09-14 — Task 3A-revision: Owner dashboard reworked to approved visual reference
+- Reworked OWNER dashboard to match the approved command-center reference: light full-bleed header (date/time + Export CSV + profile), compact Requires-Your-Attention strip (dominant Commercial Approvals + Payment Blocked/Delayed/Escalated tiles), single-row 6-card Business Snapshot, chevron Lead Pipeline + real Leads Trend chart, one wide 5-column ECP Project Status panel (Registration/Dispatch/Installation/Completion/Attention), compact Payments Overview (First Pending/First Confirmed/Subsequent — no Final), and a real Recent Activity panel.
+- Leads Trend derived client-side from existing /leads (real data, no fabrication); Recent Activity from existing owner-only /activities; recharts used for the chart. Zero backend changes. Non-owner dashboards untouched. Verified via screenshot; compiles clean.
