@@ -847,7 +847,10 @@ async def list_ecps(stage: Optional[str] = None, view: Optional[str] = None, use
 
 @api.get("/ecps/{ecp_id}")
 async def get_ecp(ecp_id: str, user: dict = Depends(get_current_user)):
-    ecp = await db.ecps.find_one({"id": ecp_id}, NO_ID)
+    scope = ecp_filter_for_role(user)
+    if scope.get("id") == "__none__":
+        raise HTTPException(status_code=404, detail="ECP not found")
+    ecp = await db.ecps.find_one({**scope, "id": ecp_id}, NO_ID)
     if not ecp:
         raise HTTPException(status_code=404, detail="ECP not found")
     await enrich_ecp(ecp)

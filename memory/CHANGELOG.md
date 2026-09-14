@@ -37,4 +37,8 @@
 - Verified by testing agent iteration_8: 8/8 targeted backend tests + live UI smoke, no functional bugs. Existing 159-suite untouched.
 - NOTE: The broad "operations command-center" redesign of the EXISTING role dashboards (Owner/Manager/Lead/Registration/Accounts/Dispatch) and Site-Visit geo-photo/extra-material capture UI were NOT done in this pass (budget) — existing dashboards remain functional; these are deferred.
 
+## Security fix (2026-06) — ECP detail IDOR
+- `GET /api/ecps/{ecp_id}` (`get_ecp`) now applies the same `ecp_filter_for_role(user)` visibility scope as the list endpoint (early 404 for the `__none__` blocked-role case, e.g. COMPLAINT). Previously it fetched by id only, allowing direct-ID retrieval of out-of-scope ECPs. DISPATCH scrubbing (project_price removed, payments empty) preserved after the scope check.
+- Verified by testing agent iteration_10: 13/13 backend tests pass (list/detail scope parity for all roles; DISPATCH stage-only; REGISTRATION allowed stages; INSTALLATION_MEMBER assignment gating; COMPLAINT 404; non-existent id 404). Regression test: `tests/test_ecp_detail_scope.py`.
+
 ## Prior note: Frontend compiles clean (HTTP 200); Phase 4-10 new-flow UI is wired (Complaints page, InstallationWork, DeliveryChallanPanel, Site Visit survey) but visual QA via the screenshot harness was blocked by an auth-persistence quirk in the preview automation; backend behavior fully verified via automated tests.
