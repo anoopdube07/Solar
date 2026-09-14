@@ -98,3 +98,10 @@
 - Added an OWNER entry to the existing FILTERS map in ECPs.jsx (All, Pending Documents, Registration 1/2, Accounts 1/2, Payment Blocked, Ready for Dispatch, Dispatch In Process, Installation, Ready to Install, Installation In Process, Net Metering, Successfully Completed, Closed/Cancelled, Delayed) so Owner now gets the ECP filter selector + bookmarkable URL.
 - Fixed Owner dashboard ECP links in Dashboard.jsx to exact backend params: Payment Blocked->view=PAYMENT_BLOCKED, Ready for Dispatch->view=READY_FOR_DISPATCH, Dispatch In Process->view=DISPATCH_IN_PROCESS, Ready to Install->view=READY_TO_INSTALL, Installation In Process->view=IN_PROCESS, Delayed->view=DELAYED, Successfully Completed->view=COMPLETED, Closed/Cancelled->view=CLOSED (stage params unchanged for reg/accounts/NM/pending-docs).
 - Zero backend changes: reused existing _matches_view + stage filtering (OWNER role filter already returns {}). Verified via curl (each view returns exact subset) and screenshot (refresh preserves filter, selector shows correct label).
+
+## 2026-09-14 — Fix: Installation assignment pool includes INSTALLATION_MEMBER
+- backend/server.py /users/team/{role}: when role=="INSTALLATION", query {"role":{"$in":list(wf.INSTALL_MEMBER_ROLES)}} (INSTALLATION + INSTALLATION_MEMBER); all other roles keep exact-role filter. Response shape unchanged.
+- Verified by testing_agent (iteration_20.json, backend+frontend 100
+## 2026-06 — Fix: Installation assignment pool includes INSTALLATION_MEMBER
+- backend/server.py /users/team/{role}: when role=="INSTALLATION", query role in wf.INSTALL_MEMBER_ROLES (INSTALLATION + INSTALLATION_MEMBER); all other roles keep exact-role filter. Response shape unchanged.
+- Verified by testing_agent iteration_20.json (backend+frontend 100%): dropdown now lists active INSTALLATION_MEMBER users, assignment succeeds (ECP to READY_TO_INSTALL), no cross-role leakage, inactive excluded.

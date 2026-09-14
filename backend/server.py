@@ -130,7 +130,8 @@ async def list_team_users(role: str, user: dict = Depends(get_current_user)):
     require(user, "OWNER", "MANAGER", "INSTALLATION_MANAGER")
     if role not in wf.ROLES:
         raise HTTPException(status_code=400, detail="Invalid role")
-    users = await db.users.find({"role": role, "active": True}, NO_ID).to_list(1000)
+    role_q = {"$in": list(wf.INSTALL_MEMBER_ROLES)} if role == "INSTALLATION" else role
+    users = await db.users.find({"role": role_q, "active": True}, NO_ID).to_list(1000)
     return [{"id": u["id"], "name": u["name"], "username": u["username"], "role": u["role"]} for u in users]
 
 
