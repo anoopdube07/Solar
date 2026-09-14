@@ -63,4 +63,8 @@
 - Also fixed a broken empty named-import in `Login.jsx` (`import { } from "@/context/AuthContext"`) that crashed the login page — restored `import { useAuth }`.
 - Verified by testing agent iteration_15: 7/7 role scenarios pass — INSTALLATION_MANAGER can load installers, see the button, open the dialog, assign (→ READY_TO_INSTALL); MANAGER/OWNER unchanged; INSTALLATION_MEMBER/REGISTRATION/DISPATCH/LEAD do not gain the capability.
 
+## Frontend fix (2026-06) — NET_METERING stage-team mapping
+- `ECPDetail.jsx` STAGE_TEAM: `NET_METERING` corrected from `INSTALLATION` to `REGISTRATION`, matching backend workflow ownership. REGISTRATION users are now treated as the stage team (see Net Metering task-completion controls instead of the read-only notice); other mappings unchanged. Backend `Close Net Metering` ownership (INSTALLATION_MEMBER) unchanged.
+- Verified by testing agent iteration_16: 100% frontend pass on a live NET_METERING ECP — REGISTRATION sees Mark Done controls, INSTALLATION does not, no runtime errors.
+
 ## Prior note: Frontend compiles clean (HTTP 200); Phase 4-10 new-flow UI is wired (Complaints page, InstallationWork, DeliveryChallanPanel, Site Visit survey) but visual QA via the screenshot harness was blocked by an auth-persistence quirk in the preview automation; backend behavior fully verified via automated tests.
