@@ -798,8 +798,10 @@ def _scrub_dispatch(e: dict):
 
 def ecp_filter_for_role(user: dict):
     role = user["role"]
-    if role in ("OWNER", "MANAGER", "LEAD", "ACCOUNTS"):
+    if role in ("OWNER", "MANAGER", "ACCOUNTS"):
         return {}
+    if role == "LEAD":
+        return {"lead_owner_id": {"$in": [user["id"], None]}}
     if role == "REGISTRATION":
         return {"current_stage": {"$in": ALLOWED_STAGES["REGISTRATION"]}}
     if role == "DISPATCH":

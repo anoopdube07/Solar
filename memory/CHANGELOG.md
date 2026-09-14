@@ -41,4 +41,8 @@
 - `GET /api/ecps/{ecp_id}` (`get_ecp`) now applies the same `ecp_filter_for_role(user)` visibility scope as the list endpoint (early 404 for the `__none__` blocked-role case, e.g. COMPLAINT). Previously it fetched by id only, allowing direct-ID retrieval of out-of-scope ECPs. DISPATCH scrubbing (project_price removed, payments empty) preserved after the scope check.
 - Verified by testing agent iteration_10: 13/13 backend tests pass (list/detail scope parity for all roles; DISPATCH stage-only; REGISTRATION allowed stages; INSTALLATION_MEMBER assignment gating; COMPLAINT 404; non-existent id 404). Regression test: `tests/test_ecp_detail_scope.py`.
 
+## Security fix (2026-06) — LEAD ECP list visibility
+- `ecp_filter_for_role(user)` LEAD branch changed from `{}` (unrestricted — LEAD could list all ECPs) to `{"lead_owner_id": {"$in": [user["id"], None]}}`, matching the detail endpoint (`get_ecp`) and LEAD dashboard scoping. OWNER/MANAGER/ACCOUNTS unchanged (`{}`).
+- Verified by testing agent iteration_11: 22 passed, 1 skipped. LEAD list is a proper subset of OWNER's, list/detail parity holds, a synthetic foreign-owned ECP is invisible to LEAD (absent from list + 404 on detail) yet visible to OWNER. Existing IDOR suite still green. Regression test: `tests/test_ecp_lead_list_scope.py`.
+
 ## Prior note: Frontend compiles clean (HTTP 200); Phase 4-10 new-flow UI is wired (Complaints page, InstallationWork, DeliveryChallanPanel, Site Visit survey) but visual QA via the screenshot harness was blocked by an auth-persistence quirk in the preview automation; backend behavior fully verified via automated tests.
