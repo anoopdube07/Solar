@@ -35,7 +35,7 @@ export default function ECPDetail() {
   const load = () => api.get(`/ecps/${id}`).then((r) => setData(r.data));
   useEffect(() => { load(); }, [id]);
   useEffect(() => {
-    if (user.role === "MANAGER" || user.role === "OWNER") {
+    if (user.role === "INSTALLATION_MANAGER" || user.role === "MANAGER" || user.role === "OWNER") {
       api.get("/users/team/INSTALLATION").then((r) => setInstallers(r.data)).catch(() => {});
     }
   }, [user.role]);
@@ -75,7 +75,7 @@ export default function ECPDetail() {
 
   const canFinancing = ["LEAD", "MANAGER", "OWNER"].includes(user.role);
   const canClose = ["OWNER", "MANAGER"].includes(user.role) && active;
-  const canAssignInstall = ["MANAGER", "OWNER"].includes(user.role);
+  const canAssignInstall = ["INSTALLATION_MANAGER", "MANAGER", "OWNER"].includes(user.role);
   const stageIdx = STAGE_ORDER.indexOf(stage);
   const fmt = (n) => "₹" + Number(n || 0).toLocaleString("en-IN");
   const firstConf = payments.filter((p) => p.type === "FIRST" && p.status === "CONFIRMED").reduce((a, p) => a + p.amount, 0);

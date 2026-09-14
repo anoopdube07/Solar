@@ -58,4 +58,9 @@
 - Verified by testing agent iteration_14: 6/6 tests pass (no/draft challan blocked, finalized allows, requires-chain ordering, full sequence auto-advances DISPATCH→INSTALLATION, RBAC intact); prior scope suites green. Regression test: `tests/test_dispatch_challan_gate.py`.
 - Known minor UX (pre-existing, from the detail-scope fix): when a DISPATCH user completes the final Dispatch task, the ECP auto-advances to INSTALLATION and the `get_ecp` response (now role-scoped) 404s for DISPATCH even though the write succeeded. Not a correctness issue for this gate.
 
+## Frontend fix (2026-06) — INSTALLATION_MANAGER assign UI + Login import
+- `ECPDetail.jsx`: installers-load condition and `canAssignInstall` now include `INSTALLATION_MANAGER` (backend already authorized it on `POST /ecps/{id}/assign-installation` and `/users/team/INSTALLATION`). Assign button still gated on stage===INSTALLATION && install_status===AWAITING_ASSIGNMENT && canAssignInstall. Frontend-only change; existing dialog/API reused.
+- Also fixed a broken empty named-import in `Login.jsx` (`import { } from "@/context/AuthContext"`) that crashed the login page — restored `import { useAuth }`.
+- Verified by testing agent iteration_15: 7/7 role scenarios pass — INSTALLATION_MANAGER can load installers, see the button, open the dialog, assign (→ READY_TO_INSTALL); MANAGER/OWNER unchanged; INSTALLATION_MEMBER/REGISTRATION/DISPATCH/LEAD do not gain the capability.
+
 ## Prior note: Frontend compiles clean (HTTP 200); Phase 4-10 new-flow UI is wired (Complaints page, InstallationWork, DeliveryChallanPanel, Site Visit survey) but visual QA via the screenshot harness was blocked by an auth-persistence quirk in the preview automation; backend behavior fully verified via automated tests.
