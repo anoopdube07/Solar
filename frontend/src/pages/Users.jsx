@@ -13,7 +13,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Plus } from "lucide-react";
 import { toast } from "sonner";
 
-const ROLES = ["OWNER", "MANAGER", "LEAD", "REGISTRATION", "ACCOUNTS", "DISPATCH", "INSTALLATION", "INSTALLATION_MANAGER", "INSTALLATION_MEMBER", "COMPLAINT"];
+const ROLES = ["OWNER", "MANAGER", "LEAD", "REGISTRATION", "ACCOUNTS", "DISPATCH", "INSTALLATION_MANAGER", "INSTALLATION_MEMBER", "COMPLAINT"];
 
 export default function Users() {
   const [users, setUsers] = useState([]);
@@ -80,7 +80,7 @@ export default function Users() {
             <div><Label>Role / Team *</Label>
               <Select value={f.role} onValueChange={(v) => setF({ ...f, role: v })}>
                 <SelectTrigger data-testid="user-role-select"><SelectValue /></SelectTrigger>
-                <SelectContent>{ROLES.map((r) => <SelectItem key={r} value={r}>{ROLE_LABELS[r]}</SelectItem>)}</SelectContent>
+                <SelectContent>{(edit?.role === "INSTALLATION" ? ["INSTALLATION", ...ROLES] : ROLES).map((r) => <SelectItem key={r} value={r}>{ROLE_LABELS[r]}</SelectItem>)}</SelectContent>
               </Select>
             </div>
             <div><Label>Password {edit ? "(leave blank to keep)" : "*"}</Label><Input data-testid="user-password-input" type="password" value={f.password || ""} onChange={(e) => setF({ ...f, password: e.target.value })} /></div>

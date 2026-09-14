@@ -76,4 +76,8 @@
 - `server.py`: FOLLOW_UP action past-date guard now compares against `ist_today_str()` (was UTC `datetime.now(timezone.utc).date()`), and dashboard `followups_today()` counts follow-ups against `ist_today_str()` (was the shared UTC `today`). `list_leads(?followup=today)` already used IST (unchanged). The shared dashboard UTC `today` used by unrelated site-visit/complaint metrics was intentionally left untouched. No stored date-format or data changes.
 - Verified by testing agent iteration_18: 10/10 IST-boundary tests + existing follow-up regression pass — IST-today accepted, IST-yesterday rejected/not-counted, dashboard count consistent with `?followup=today`. Regression test: `tests/test_followup_ist.py`.
 
+## UI fix (2026-06) — remove obsolete "Installation Team" role from user creation
+- `Users.jsx`: removed `INSTALLATION` from the selectable `ROLES` list (Create/Edit User dropdown). Installation Manager and Installation Member remain; all other roles unchanged. `ROLE_LABELS.INSTALLATION` kept so legacy records still render, and the dropdown still offers `INSTALLATION` when editing an existing INSTALLATION user so their record isn't broken. No backend/role-definition/data changes.
+- Verified by code inspection + clean compile (HTTP 200); screenshot harness could not be used due to the documented auth-persistence quirk.
+
 ## Prior note: Frontend compiles clean (HTTP 200); Phase 4-10 new-flow UI is wired (Complaints page, InstallationWork, DeliveryChallanPanel, Site Visit survey) but visual QA via the screenshot harness was blocked by an auth-persistence quirk in the preview automation; backend behavior fully verified via automated tests.
