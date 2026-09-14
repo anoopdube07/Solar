@@ -1093,6 +1093,8 @@ async def ecp_financing(ecp_id: str, body: FinancingBody, user: dict = Depends(g
     ecp = await db.ecps.find_one({"id": ecp_id}, NO_ID)
     if not ecp:
         raise HTTPException(status_code=404, detail="ECP not found")
+    if user["role"] == "LEAD" and ecp.get("lead_owner_id") not in (user["id"], None):
+        raise HTTPException(status_code=403, detail="Not permitted for this ECP")
     await _apply_ecp_financing(ecp_id, bool(body.financing_required), user)
     await db.leads.update_one({"id": ecp["lead_id"]}, {"$set": {
         "financing_required": bool(body.financing_required)}})
