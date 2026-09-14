@@ -19,7 +19,6 @@ const fmt = (n) => "₹" + Number(n || 0).toLocaleString("en-IN");
 const TYPE_OPTIONS = [
   ["FIRST", "First Payment"],
   ["ADDITIONAL", "Subsequent Payment"],
-  ["FINAL", "Final Payment"],
 ];
 
 export default function Payments() {
