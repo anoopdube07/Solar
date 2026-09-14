@@ -67,4 +67,9 @@
 - `ECPDetail.jsx` STAGE_TEAM: `NET_METERING` corrected from `INSTALLATION` to `REGISTRATION`, matching backend workflow ownership. REGISTRATION users are now treated as the stage team (see Net Metering task-completion controls instead of the read-only notice); other mappings unchanged. Backend `Close Net Metering` ownership (INSTALLATION_MEMBER) unchanged.
 - Verified by testing agent iteration_16: 100% frontend pass on a live NET_METERING ECP — REGISTRATION sees Mark Done controls, INSTALLATION does not, no runtime errors.
 
+## Feature (2026-06) — Edit existing payment from ECP Detail
+- `ECPDetail.jsx` Payment Position: each payment row now has an "Edit" button for ACCOUNTS (only while ECP is ACTIVE). It opens a dialog pre-filled with the payment's amount/date/status/remarks and submits via the existing `PATCH /api/payments/{id}`; on success shows a toast and reloads via existing `load()`. Payment TYPE is read-only in the dialog, so no duplicate FIRST/FINAL can be created. Added the missing `Input` import.
+- Backend unchanged (PATCH is ACCOUNTS-only, sets amount/date/status/remarks only, never touches current_stage).
+- Verified by testing agent iteration_17: 100% backend + frontend — edit/prefill/save/toast, current_stage unchanged, no duplicate payment, RBAC enforced (OWNER/MANAGER see no button + 403 backend), creation still works. Regression test: `tests/test_payment_edit_scope.py`.
+
 ## Prior note: Frontend compiles clean (HTTP 200); Phase 4-10 new-flow UI is wired (Complaints page, InstallationWork, DeliveryChallanPanel, Site Visit survey) but visual QA via the screenshot harness was blocked by an auth-persistence quirk in the preview automation; backend behavior fully verified via automated tests.

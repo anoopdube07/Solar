@@ -11,6 +11,7 @@ import { DeliveryChallanPanel } from "@/components/DeliveryChallanPanel";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
+import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
@@ -31,6 +32,8 @@ export default function ECPDetail() {
   const [assignDlg, setAssignDlg] = useState(false);
   const [installers, setInstallers] = useState([]);
   const [assignUser, setAssignUser] = useState("");
+  const [payDlg, setPayDlg] = useState(false);
+  const [payForm, setPayForm] = useState({});
 
   const load = () => api.get(`/ecps/${id}`).then((r) => setData(r.data));
   useEffect(() => { load(); }, [id]);
@@ -46,6 +49,15 @@ export default function ECPDetail() {
   const isStageTeam = user.role === STAGE_TEAM[stage] || user.role === "OWNER";
   const stageTasks = tasks.filter((t) => t.stage === stage && t.applicable);
   const active = ecp.status === "ACTIVE";
+
+  const openEditPay = (p) => { setPayForm({ id: p.id, type: p.type, amount: String(p.amount ?? ""), date: (p.date || "").slice(0, 10), status: p.status, remarks: p.remarks || "" }); setPayDlg(true); };
+  const savePayEdit = async () => {
+    if (!payForm.amount || !payForm.date) { toast.error("Amount and date are required"); return; }
+    try {
+      await api.patch(`/payments/${payForm.id}`, { amount: parseFloat(payForm.amount), date: payForm.date, status: payForm.status, remarks: payForm.remarks });
+      toast.success("Payment updated"); setPayDlg(false); load();
+    } catch (e) { toast.error(apiError(e.response?.data?.detail)); }
+  };
 
   const completeTask = async (taskId) => {
     try { await api.post(`/ecps/${id}/tasks/${taskId}/complete`); toast.success("Task completed"); load(); }
@@ -228,7 +240,10 @@ export default function ECPDetail() {
                 {payments.map((p) => (
                   <li key={p.id} className="flex items-center justify-between text-sm border-b pb-1">
                     <span><b>{typeLabel(p.type)}</b> · {fmt(p.amount)} · {p.date?.slice(0, 10)}</span>
-                    <StatusBadge value={p.status} kind={p.status === "CONFIRMED" ? "CONFIRMED" : "PENDING"} label={p.status} />
+                    <div className="flex items-center gap-2">
+                      <StatusBadge value={p.status} kind={p.status === "CONFIRMED" ? "CONFIRMED" : "PENDING"} label={p.status} />
+                      {user.role === "ACCOUNTS" && active && <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" data-testid={`edit-payment-${p.id}`} onClick={() => openEditPay(p)}>Edit</Button>}
+                    </div>
                   </li>
                 ))}
               </ul>
@@ -281,6 +296,24 @@ export default function ECPDetail() {
             </Select>
           </div>
           <DialogFooter><Button data-testid="assign-install-submit" onClick={assignInstall} className="bg-sky-600 hover:bg-sky-700">Assign</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={payDlg} onOpenChange={setPayDlg}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Edit {typeLabel(payForm.type)} Payment</DialogTitle></DialogHeader>
+          <div className="space-y-3">
+            <div><Label>Amount *</Label><Input data-testid="edit-payment-amount" type="number" value={payForm.amount || ""} onChange={(e) => setPayForm({ ...payForm, amount: e.target.value })} /></div>
+            <div><Label>Date *</Label><Input data-testid="edit-payment-date" type="date" value={payForm.date || ""} onChange={(e) => setPayForm({ ...payForm, date: e.target.value })} /></div>
+            <div><Label>Status</Label>
+              <Select value={payForm.status} onValueChange={(v) => setPayForm({ ...payForm, status: v })}>
+                <SelectTrigger data-testid="edit-payment-status"><SelectValue /></SelectTrigger>
+                <SelectContent>{["PENDING", "CONFIRMED"].map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}</SelectContent>
+              </Select>
+            </div>
+            <div><Label>Remarks</Label><Textarea data-testid="edit-payment-remarks" value={payForm.remarks || ""} onChange={(e) => setPayForm({ ...payForm, remarks: e.target.value })} /></div>
+          </div>
+          <DialogFooter><Button data-testid="edit-payment-submit" onClick={savePayEdit} className="bg-sky-600 hover:bg-sky-700">Save Changes</Button></DialogFooter>
         </DialogContent>
       </Dialog>
     </div>
