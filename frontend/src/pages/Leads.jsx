@@ -26,12 +26,11 @@ export default function Leads() {
   const statusFilter = params.get("status") || "";
   const followupFilter = params.get("followup") || "";
   const [leads, setLeads] = useState([]);
-  const [employees, setEmployees] = useState([]);
   const [items, setItems] = useState([]);
   const [req, setReq] = useState({});
   const [q, setQ] = useState("");
   const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({ name: "", phone: "", email: "", address: "", source: "", financing_required: false, project_price: "", lead_creator_id: "", item_id: "", quantity: "", location_link: "", remarks: "" });
+  const [form, setForm] = useState({ name: "", phone: "", email: "", address: "", source: "", financing_required: false, project_price: "", item_id: "", quantity: "", location_link: "", remarks: "" });
 
   const load = () => {
     const p = new URLSearchParams();
@@ -41,7 +40,6 @@ export default function Leads() {
   };
   useEffect(() => { load(); }, [statusFilter, followupFilter]);
   useEffect(() => {
-    api.get("/lead-employees?active_only=true").then((r) => setEmployees(r.data)).catch(() => {});
     api.get("/items?active_only=true").then((r) => setItems(r.data)).catch(() => {});
     api.get("/lead-field-config").then((r) => setReq(r.data.fields || {})).catch(() => {});
   }, []);
@@ -58,11 +56,10 @@ export default function Leads() {
         project_price: parseFloat(form.project_price) || 0,
         quantity: form.quantity === "" ? null : parseFloat(form.quantity),
         item_id: form.item_id || null,
-        lead_creator_id: form.lead_creator_id || null,
       });
       toast.success("Lead created");
       setOpen(false);
-      setForm({ name: "", phone: "", email: "", address: "", source: "", financing_required: false, project_price: "", lead_creator_id: "", item_id: "", quantity: "", location_link: "", remarks: "" });
+      setForm({ name: "", phone: "", email: "", address: "", source: "", financing_required: false, project_price: "", item_id: "", quantity: "", location_link: "", remarks: "" });
       load();
     } catch (e) { toast.error(apiError(e.response?.data?.detail)); }
   };
@@ -86,12 +83,6 @@ export default function Leads() {
               <div className="space-y-3">
                 <div><Label>Name *</Label><Input data-testid="lead-name-input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></div>
                 <div><Label>Phone *</Label><Input data-testid="lead-phone-input" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} /></div>
-                <div><Label>Lead Creator</Label>
-                  <Select value={form.lead_creator_id} onValueChange={(v) => setForm({ ...form, lead_creator_id: v })}>
-                    <SelectTrigger data-testid="lead-creator-select"><SelectValue placeholder="Select employee" /></SelectTrigger>
-                    <SelectContent>{employees.map((e) => <SelectItem key={e.id} value={e.id}>{e.name}</SelectItem>)}</SelectContent>
-                  </Select>
-                </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div><Label>Email{mark("email")}</Label><Input value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} /></div>
                   <div><Label>Source</Label><Input value={form.source} onChange={(e) => setForm({ ...form, source: e.target.value })} /></div>

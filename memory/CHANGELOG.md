@@ -81,3 +81,7 @@
 - Verified by code inspection + clean compile (HTTP 200); screenshot harness could not be used due to the documented auth-persistence quirk.
 
 ## Prior note: Frontend compiles clean (HTTP 200); Phase 4-10 new-flow UI is wired (Complaints page, InstallationWork, DeliveryChallanPanel, Site Visit survey) but visual QA via the screenshot harness was blocked by an auth-persistence quirk in the preview automation; backend behavior fully verified via automated tests.
+
+## 2026-09-14 — Lead Creator unified + reassignment authorization
+- Lead Creator is now always the authenticated creator (backend sets lead_creator_id/name = user id/name); removed lead_creator_id from LeadCreate and the create-lead dropdown in Leads.jsx (no more /lead-employees dependency for creation).
+- Reassignment stays OWNER/MANAGER-only (403 for LEAD, verified), targets active users with role LEAD from unified /users/team/LEAD, and now rejects LOST leads server-side (400). Legacy lead_employees module/data left intact.

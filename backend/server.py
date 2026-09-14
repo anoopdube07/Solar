@@ -226,7 +226,6 @@ class LeadCreate(BaseModel):
     source: Optional[str] = ""
     financing_required: bool = False
     project_price: Optional[float] = 0
-    lead_creator_id: Optional[str] = None
     item_id: Optional[str] = None
     quantity: Optional[float] = None
     location_link: Optional[str] = ""
@@ -273,12 +272,8 @@ async def list_leads(status: Optional[str] = None, followup: Optional[str] = Non
 @api.post("/leads")
 async def create_lead(body: LeadCreate, user: dict = Depends(get_current_user)):
     require(user, "LEAD", "OWNER")
-    creator_id, creator_name = None, None
-    if body.lead_creator_id:
-        emp = await db.lead_employees.find_one({"id": body.lead_creator_id}, NO_ID)
-        if not emp or not emp.get("active", True):
-            raise HTTPException(status_code=400, detail="Invalid or inactive Lead Creator")
-        creator_id, creator_name = emp["id"], emp["name"]
+    # Lead Creator is always the authenticated user who creates the lead.
+    creator_id, creator_name = user["id"], user["name"]
     # Duplicate active-lead check (server-side): ACTIVE = any status except LOST
     phone = body.phone.strip()
     dup = await db.leads.find_one({"phone": phone, "status": {"$ne": "LOST"}}, NO_ID)
@@ -382,6 +377,8 @@ async def reassign_lead(lead_id: str, body: ReassignLead, user: dict = Depends(g
     lead = await db.leads.find_one({"id": lead_id}, NO_ID)
     if not lead:
         raise HTTPException(status_code=404, detail="Lead not found")
+    if lead.get("status") == "LOST":
+        raise HTTPException(status_code=400, detail="LOST leads cannot be reassigned")
     emp = await db.users.find_one({"id": body.assigned_user}, NO_ID)
     if not emp or emp["role"] != "LEAD" or not emp.get("active", True):
         raise HTTPException(status_code=400, detail="Assignee must be an active Lead Team user")
