@@ -85,3 +85,7 @@
 ## 2026-09-14 — Lead Creator unified + reassignment authorization
 - Lead Creator is now always the authenticated creator (backend sets lead_creator_id/name = user id/name); removed lead_creator_id from LeadCreate and the create-lead dropdown in Leads.jsx (no more /lead-employees dependency for creation).
 - Reassignment stays OWNER/MANAGER-only (403 for LEAD, verified), targets active users with role LEAD from unified /users/team/LEAD, and now rejects LOST leads server-side (400). Legacy lead_employees module/data left intact.
+
+## 2026-09-14 — Task 3A: Owner Command Center dashboard redesign
+- Redesigned OWNER dashboard (frontend/src/pages/Dashboard.jsx) from a flat StatCard grid into a command center: Attention Required (Commercial Approvals, Escalated, Payment Blocked, Delayed), Business Overview KPI row, Lead Pipeline flow (Lost separated), grouped ECP Operations (Registration/Dispatch/Installation/Completion), and Payments (First Pending/First Confirmed/Subsequent — Final removed).
+- Reused /dashboard API and existing drill-down routes; no backend changes. Commercial banner + Export CSV preserved. Non-owner dashboards unchanged. Verified via screenshot + drill-down check.
