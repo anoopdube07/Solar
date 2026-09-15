@@ -160,6 +160,97 @@ async def create_user(body: UserCreate, user: dict = Depends(get_current_user)):
     return public_user(dict(doc))
 
 
+def _install_role_q():
+    return {"$in": list(wf.INSTALL_MEMBER_ROLES)}
+
+
+async def _active_assignments(uid: str):
+    """Active/pending per-user work that would be stranded if the user is deactivated.
+    Only ACTIVE/pending items are returned; completed/historical work is ignored."""
+    items = []
+    async for l in db.leads.find({"lead_owner_id": uid, "status": {"$ne": "LOST"}}, NO_ID):
+        items.append({"type": "LEAD", "id": l["id"], "label": l.get("name", "Lead"),
+                      "detail": f"Lead • {l.get('status', '')}", "complaint_team": None})
+    async for e in db.ecps.find({"responsible_user": uid, "status": "ACTIVE",
+                                 "current_stage": {"$in": ["INSTALLATION", "NET_METERING"]}}, NO_ID):
+        items.append({"type": "ECP", "id": e["id"], "label": e.get("lead_name", "ECP Project"),
+                      "detail": f"ECP • {wf.STAGE_LABELS.get(e.get('current_stage'), e.get('current_stage'))}",
+                      "complaint_team": None})
+    async for s in db.lead_site_visits.find({"assigned_user": uid, "status": "ASSIGNED"}, NO_ID):
+        items.append({"type": "SITE_VISIT", "id": s["id"], "label": s.get("lead_name", "Site Visit"),
+                      "detail": f"Site Visit • {s.get('visit_date', '') or 'scheduled'}", "complaint_team": None})
+    async for c in db.complaints.find({"assigned_user": uid, "status": {"$in": ["ASSIGNED", "IN_PROGRESS"]}}, NO_ID):
+        items.append({"type": "COMPLAINT", "id": c["id"], "label": c.get("title", "Complaint"),
+                      "detail": f"Complaint • {c.get('status', '')} • {c.get('assigned_team', '') or ''}",
+                      "complaint_team": c.get("assigned_team")})
+    return items
+
+
+async def _eligible_users(work_type: str, exclude_id: str, complaint_team: str = None):
+    """Eligible active replacement users for a work type, reusing role/team rules."""
+    if work_type == "LEAD":
+        q = {"role": "LEAD"}
+    elif work_type in ("ECP", "SITE_VISIT"):
+        q = {"role": _install_role_q()}
+    elif work_type == "COMPLAINT":
+        if complaint_team == "INSTALLATION":
+            q = {"role": _install_role_q()}
+        elif complaint_team:
+            q = {"role": complaint_team}
+        else:
+            q = {}
+    else:
+        q = {}
+    q = {**q, "active": True, "id": {"$ne": exclude_id}}
+    us = await db.users.find(q, NO_ID).to_list(1000)
+    return [{"id": u["id"], "name": u["name"], "role": u["role"]} for u in us]
+
+
+async def _apply_reassignment(actor: dict, work_type: str, work_id: str, emp: dict):
+    if work_type == "LEAD":
+        lead = await db.leads.find_one({"id": work_id}, NO_ID)
+        if not lead:
+            raise HTTPException(status_code=404, detail="Lead not found")
+        if lead.get("status") == "LOST":
+            raise HTTPException(status_code=400, detail="LOST leads cannot be reassigned")
+        prev = lead.get("lead_owner_name") or "—"
+        await db.leads.update_one({"id": work_id}, {"$set": {
+            "lead_owner_id": emp["id"], "lead_owner_name": emp["name"], "updated_at": now_iso()}})
+        await log_activity(actor, "Lead Reassigned", "LEAD", work_id, lead.get("name", ""), f"{prev} → {emp['name']}")
+    elif work_type == "ECP":
+        ecp = await db.ecps.find_one({"id": work_id}, NO_ID)
+        if not ecp:
+            raise HTTPException(status_code=404, detail="ECP not found")
+        prev = ecp.get("responsible_user_name") or "—"
+        await db.ecps.update_one({"id": work_id}, {"$set": {
+            "responsible_user": emp["id"], "responsible_user_name": emp["name"],
+            "current_team": "INSTALLATION_MEMBER", "updated_at": now_iso()}})
+        await db.ecp_stage_history.insert_one({
+            "id": new_id(), "ecp_id": work_id, "from_stage": ecp["current_stage"], "to_stage": ecp["current_stage"],
+            "changed_by": actor["id"], "changed_by_name": actor["name"], "changed_at": now_iso(),
+            "note": f"Reassigned {prev} → {emp['name']}"})
+        await log_activity(actor, "Installation Reassigned", "ECP", work_id, ecp.get("lead_name", ""), f"{prev} → {emp['name']}")
+    elif work_type == "SITE_VISIT":
+        sv = await db.lead_site_visits.find_one({"id": work_id}, NO_ID)
+        if not sv:
+            raise HTTPException(status_code=404, detail="Site visit not found")
+        prev = sv.get("assigned_user_name") or "—"
+        await db.lead_site_visits.update_one({"id": work_id}, {"$set": {
+            "assigned_user": emp["id"], "assigned_user_name": emp["name"],
+            "assigned_by": actor["id"], "assigned_by_name": actor["name"]}})
+        await log_activity(actor, "Site Visit Reassigned", "LEAD", sv.get("lead_id", ""), sv.get("lead_name", ""), f"{prev} → {emp['name']}")
+    elif work_type == "COMPLAINT":
+        c = await db.complaints.find_one({"id": work_id}, NO_ID)
+        if not c:
+            raise HTTPException(status_code=404, detail="Complaint not found")
+        prev = c.get("assigned_user_name") or "—"
+        await db.complaints.update_one({"id": work_id}, {"$set": {
+            "assigned_user": emp["id"], "assigned_user_name": emp["name"], "updated_at": now_iso()}})
+        await _complaint_hist(work_id, actor, "Reassigned", f"{prev} → {emp['name']}")
+    else:
+        raise HTTPException(status_code=400, detail="Invalid work type")
+
+
 @api.patch("/users/{user_id}")
 async def update_user(user_id: str, body: UserUpdate, user: dict = Depends(get_current_user)):
     require(user, "OWNER")
@@ -175,6 +266,13 @@ async def update_user(user_id: str, body: UserUpdate, user: dict = Depends(get_c
         upd["role"] = body.role
         upd["team"] = body.role
     if body.active is not None:
+        # Block direct deactivation while the user still owns active/pending work (backend-enforced;
+        # the Owner must reassign via POST /users/{id}/deactivate). Reactivation is always allowed.
+        if body.active is False and target.get("active", True):
+            pending = await _active_assignments(user_id)
+            if pending:
+                raise HTTPException(status_code=409,
+                    detail=f"User has {len(pending)} active assignment(s). Reassign the work before deactivating.")
         upd["active"] = body.active
     if body.password:
         upd["password_hash"] = hash_password(body.password)
@@ -185,6 +283,70 @@ async def update_user(user_id: str, body: UserUpdate, user: dict = Depends(get_c
     fresh = await db.users.find_one({"id": user_id}, NO_ID)
     fresh.pop("password_hash", None)
     return fresh
+
+
+@api.get("/users/{user_id}/assignments")
+async def user_active_assignments(user_id: str, user: dict = Depends(get_current_user)):
+    require(user, "OWNER")
+    target = await db.users.find_one({"id": user_id}, NO_ID)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    items = await _active_assignments(user_id)
+    for it in items:
+        it["current_user_name"] = target.get("name")
+        it["eligible_users"] = await _eligible_users(it["type"], user_id, it.get("complaint_team"))
+    return {"user_id": user_id, "user_name": target.get("name"), "count": len(items), "assignments": items}
+
+
+class ReassignItem(BaseModel):
+    type: str
+    id: str
+    new_user_id: str
+
+
+class DeactivateWithReassign(BaseModel):
+    reassignments: List[ReassignItem] = []
+
+
+@api.post("/users/{user_id}/deactivate")
+async def deactivate_user(user_id: str, body: DeactivateWithReassign, user: dict = Depends(get_current_user)):
+    require(user, "OWNER")
+    if user_id == user["id"]:
+        raise HTTPException(status_code=400, detail="You cannot deactivate your own account")
+    target = await db.users.find_one({"id": user_id}, NO_ID)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    active_items = await _active_assignments(user_id)
+    provided = {(r.type, r.id): r.new_user_id for r in body.reassignments}
+    missing = [it for it in active_items if (it["type"], it["id"]) not in provided]
+    if missing:
+        raise HTTPException(status_code=409,
+            detail=f"All active assignments must be reassigned before deactivation. {len(missing)} remaining.")
+    # Validate every replacement user, then apply each reassignment independently.
+    for it in active_items:
+        new_uid = provided[(it["type"], it["id"])]
+        if new_uid == user_id:
+            raise HTTPException(status_code=400, detail="Work cannot be reassigned back to the user being deactivated")
+        emp = await db.users.find_one({"id": new_uid}, NO_ID)
+        if not emp or not emp.get("active", True):
+            raise HTTPException(status_code=400, detail="Replacement user must be an active user")
+        eligible_ids = {u["id"] for u in await _eligible_users(it["type"], user_id, it.get("complaint_team"))}
+        if new_uid not in eligible_ids:
+            raise HTTPException(status_code=400, detail=f"Replacement user is not eligible for this {it['type'].replace('_', ' ').title()} work")
+        await _apply_reassignment(user, it["type"], it["id"], emp)
+    # Backend re-check: only deactivate when nothing active/pending remains.
+    remaining = await _active_assignments(user_id)
+    if remaining:
+        raise HTTPException(status_code=400,
+            detail=f"{len(remaining)} active assignment(s) still remain; user kept active.")
+    await db.users.update_one({"id": user_id}, {"$set": {"active": False}})
+    if active_items:
+        await log_activity(user, "User Deactivated", "USER", user_id, target.get("name", ""),
+                           f"{len(active_items)} work item(s) reassigned")
+    fresh = await db.users.find_one({"id": user_id}, NO_ID)
+    fresh.pop("password_hash", None)
+    return {"ok": True, "user": fresh, "reassigned": len(active_items)}
+
 
 
 # ========================= SLA CONFIG (Owner only to edit) =========================

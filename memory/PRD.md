@@ -67,6 +67,16 @@ Legacy Phase-1 pytest files were updated (2026-09-12) to comply with approved ru
 - Completion of Close NM auto-advances NET_METERING → REGISTRATION_2 (existing `_maybe_advance`/`_advance_stage`, stage history preserved).
 - Verified: testing_agent iteration_21 (backend + Playwright, 100%) + 19/19 focused end-to-end API validation driving a fresh ECP INSTALLATION → NET_METERING → REGISTRATION_2.
 
+## Owner User Deactivation — Work-by-Work Reassignment — DONE & backend-verified (2026-06)
+- **Requirement**: deactivating a user who still owns active/pending work is blocked; the Owner must reassign each work item independently to an eligible active user before the user can go inactive.
+- **Backend (`backend/server.py`)**: `_active_assignments(uid)` scans per-user assignment fields — leads `lead_owner_id` (status≠LOST), ecps `responsible_user` (ACTIVE + INSTALLATION/NET_METERING), lead_site_visits `assigned_user` (ASSIGNED), complaints `assigned_user` (ASSIGNED/IN_PROGRESS). Completed/historical work is ignored.
+  - `GET /api/users/{id}/assignments` (Owner) returns each active item with label/detail/current user + embedded `eligible_users` (role/team rules, active only, excludes self).
+  - `PATCH /api/users/{id}` now returns 409 on active→inactive while work remains (backend-enforced anti-bypass).
+  - `POST /api/users/{id}/deactivate` (Owner) takes `reassignments:[{type,id,new_user_id}]`, requires a mapping for every active item, validates each replacement (active + eligible role), applies each independently via `_apply_reassignment` (reuses existing reassign field updates + logs activity / stage & complaint history), re-checks remaining, then sets active=false only when none remain. Self-deactivate blocked.
+- **Frontend (`frontend/src/pages/Users.jsx`)**: toggling a user off calls the assignments endpoint; if work exists, opens a reassignment dialog listing each item with its own eligible-user dropdown; "Reassign & Deactivate" posts the per-item mapping. No "reassign all" shortcut; different items can go to different users.
+- Verified: 18/18 focused backend checks (no-work direct deactivate, 409 block, independent multi-reassign to different users, unauthorized/inactive rejection, incomplete-mapping guard, historical unchanged, deactivated login blocked, self-deactivate guard). Per user request, UI was NOT auto-tested (manual UI testing).
+- **NOTE**: OWNER/lead/manager/etc. demo passwords in `test_credentials.md` were changed in-app and no longer match the seed defaults (instmgr/instmem still default). Seed only creates missing users, so it does not reset them.
+
 ## Pending (from prior handoff, NOT started)
 - P0: Operations Command-Center Dashboard redesign for the 9 non-OWNER roles (Manager/Lead/Registration/Accounts/Dispatch/Install Mgr/Install Member/Complaint) to match the Owner "Command Center" aesthetic.
 - P1: Sidebar redesign ("Task 3B").
