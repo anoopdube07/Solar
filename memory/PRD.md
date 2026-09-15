@@ -58,6 +58,19 @@ Legacy Phase-1 pytest files were updated (2026-09-12) to comply with approved ru
 - **UI**: `DocumentsPanel` on LeadDetail + ECPDetail (per-type rows, upload/replace, overall COMPLETE/INCOMPLETE badge, missing list, download); ECPDetail `ecp-pending-docs-notice`; Dashboard counters (Owner ECP "Pending Documents", Registration + Lead "Awaiting Documents").
 - **Tests**: `tests/test_phase3_documents.py` 35/35 pass; full backend suite 118 legacy/phase2 green (4 unrelated pre-existing flakes: transient upload 502 + stateful money math).
 
+## Net Metering Close-Task Handoff — DONE & verified (2026-06 / iteration_21)
+- **Bug**: entering NET_METERING carried the Installation-stage `responsible_user`, letting REGISTRATION complete the INSTALLATION_MEMBER-team "Close Net Metering" task via the pre-carried assignee.
+- **Fix (`backend/server.py` `_advance_stage`)**: removed the NET_METERING special-case; `responsible_user`/`responsible_user_name` are now cleared on entry (default else-branch). NET_METERING stage ownership stays REGISTRATION; 5 tasks + prerequisites unchanged.
+- **Fix (`backend/server.py` `assign_installation`, POST `/api/ecps/{id}/assign-installation`)**: now branches on stage. In NET_METERING it requires "Request Net Metering from CSPDCL" completed, then assigns an active Installation worker to Close NM via existing `responsible_user` mechanism. INSTALLATION-stage behavior unchanged. Authority: INSTALLATION_MANAGER / MANAGER / OWNER.
+- **`complete_task`**: existing INSTALLATION_MEMBER-team gate (`responsible_user == user.id`) + prerequisite enforcement is authoritative (unchanged). Added: response now returns lightweight `{status:"completed", current_stage}` (200) instead of 404 when the completion auto-advances the ECP out of the caller's role scope (e.g. member completing Close NM → REGISTRATION_2).
+- **Fix (`frontend/src/pages/ECPDetail.jsx`)**: `visibleStageTasks` filters "Close Net Metering" out of the REGISTRATION stage-work list entirely; Close NM row renders assign / assigned / awaiting-prereq for Installation Manager and Mark Done for the assigned worker; `completeTask` gracefully navigates to /ecps if the ECP leaves the caller's scope.
+- Completion of Close NM auto-advances NET_METERING → REGISTRATION_2 (existing `_maybe_advance`/`_advance_stage`, stage history preserved).
+- Verified: testing_agent iteration_21 (backend + Playwright, 100%) + 19/19 focused end-to-end API validation driving a fresh ECP INSTALLATION → NET_METERING → REGISTRATION_2.
+
+## Pending (from prior handoff, NOT started)
+- P0: Operations Command-Center Dashboard redesign for the 9 non-OWNER roles (Manager/Lead/Registration/Accounts/Dispatch/Install Mgr/Install Member/Complaint) to match the Owner "Command Center" aesthetic.
+- P1: Sidebar redesign ("Task 3B").
+
 ## Next Tasks (awaiting user approval — do NOT start until approved)
 - Phase 4: Registration task rework (Consumer Request / Vendor Acceptance / conditional loan tasks, NM sequencing).
 - Phase 5: Delivery Challan (Dispatch finalizes in-app → Accounts; hide financials from Dispatch).

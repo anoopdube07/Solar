@@ -60,7 +60,7 @@ export default function ECPDetail() {
   };
 
   const completeTask = async (taskId) => {
-    try { await api.post(`/ecps/${id}/tasks/${taskId}/complete`); toast.success("Task completed"); load(); }
+    try { await api.post(`/ecps/${id}/tasks/${taskId}/complete`); toast.success("Task completed"); load().catch(() => nav("/ecps")); }
     catch (e) { toast.error(apiError(e.response?.data?.detail)); }
   };
   const startDispatch = async () => {
@@ -88,6 +88,12 @@ export default function ECPDetail() {
   const canFinancing = ["LEAD", "MANAGER", "OWNER"].includes(user.role);
   const canClose = ["OWNER", "MANAGER"].includes(user.role) && active;
   const canAssignInstall = ["INSTALLATION_MANAGER", "MANAGER", "OWNER"].includes(user.role);
+  const isNM = stage === "NET_METERING";
+  const reqNmDone = stageTasks.some((t) => t.task_name === "Request Net Metering from CSPDCL" && t.completed);
+  const isAssignedInstaller = ["INSTALLATION", "INSTALLATION_MEMBER"].includes(user.role) && ecp.responsible_user === user.id;
+  const visibleStageTasks = (isNM && user.role === "REGISTRATION")
+    ? stageTasks.filter((t) => t.task_name !== "Close Net Metering")
+    : stageTasks;
   const stageIdx = STAGE_ORDER.indexOf(stage);
   const fmt = (n) => "₹" + Number(n || 0).toLocaleString("en-IN");
   const firstConf = payments.filter((p) => p.type === "FIRST" && p.status === "CONFIRMED").reduce((a, p) => a + p.amount, 0);
@@ -194,17 +200,37 @@ export default function ECPDetail() {
                   </div>
                 ) : (
                   <ul className="space-y-2">
-                    {stageTasks.length === 0 && <li className="text-sm text-slate-400">No tasks for this stage.</li>}
-                    {stageTasks.map((t) => (
-                      <li key={t.id} data-testid={`task-${t.id}`} className="flex items-center justify-between border rounded-md px-3 py-2">
-                        <span className={`text-sm ${t.completed ? "text-emerald-700 line-through" : "text-slate-800"}`}>{t.task_name}</span>
-                        {t.completed ? <span className="text-xs text-emerald-600 font-semibold">Done · {t.completed_by_name}</span> :
-                          isStageTeam && <Button size="sm" data-testid={`complete-task-${t.id}`} onClick={() => completeTask(t.id)} disabled={stage === "DISPATCH" && !ecp.dispatch_started}>Mark Done</Button>}
-                      </li>
-                    ))}
+                    {visibleStageTasks.length === 0 && <li className="text-sm text-slate-400">No tasks for this stage.</li>}
+                    {visibleStageTasks.map((t) => {
+                      const closeNM = isNM && t.task_name === "Close Net Metering";
+                      return (
+                        <li key={t.id} data-testid={`task-${t.id}`} className="flex items-center justify-between border rounded-md px-3 py-2">
+                          <span className={`text-sm ${t.completed ? "text-emerald-700 line-through" : "text-slate-800"}`}>{t.task_name}</span>
+                          {t.completed ? (
+                            <span className="text-xs text-emerald-600 font-semibold">Done · {t.completed_by_name}</span>
+                          ) : closeNM ? (
+                            canAssignInstall ? (
+                              ecp.responsible_user ? (
+                                <span className="text-xs text-slate-600 font-semibold" data-testid="close-nm-assigned">Assigned · {ecp.responsible_user_name}</span>
+                              ) : reqNmDone ? (
+                                <Button size="sm" data-testid="assign-close-nm-button" onClick={() => setAssignDlg(true)}><UserPlus size={14} className="mr-1" /> Assign</Button>
+                              ) : (
+                                <span className="text-xs text-slate-400" data-testid="close-nm-awaiting-prereq">Complete 'Request Net Metering' first</span>
+                              )
+                            ) : isAssignedInstaller ? (
+                              <Button size="sm" data-testid={`complete-task-${t.id}`} onClick={() => completeTask(t.id)}>Mark Done</Button>
+                            ) : (
+                              <span className="text-xs text-slate-400">Awaiting installation team</span>
+                            )
+                          ) : (
+                            isStageTeam && <Button size="sm" data-testid={`complete-task-${t.id}`} onClick={() => completeTask(t.id)} disabled={stage === "DISPATCH" && !ecp.dispatch_started}>Mark Done</Button>
+                          )}
+                        </li>
+                      );
+                    })}
                   </ul>
                 )}
-                {!isStageTeam && !(stage === "INSTALLATION" && canAssignInstall) && <p className="text-xs text-slate-400 mt-3">Read-only — this stage is owned by {ecp.current_team}.</p>}
+                {!isStageTeam && !(stage === "INSTALLATION" && canAssignInstall) && !(isNM && (canAssignInstall || isAssignedInstaller)) && <p className="text-xs text-slate-400 mt-3">Read-only — this stage is owned by {ecp.current_team}.</p>}
               </Card>
             )}
 

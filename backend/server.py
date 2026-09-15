@@ -883,10 +883,9 @@ async def _advance_stage(ecp: dict, user: dict, note: str = ""):
             # Dispatch completed -> route to Installation Manager for member assignment
             upd["install_status"] = "AWAITING_ASSIGNMENT"
             upd["current_team"] = "INSTALLATION_MANAGER"
-        if target == "NET_METERING":
-            # keep the assigned installation member through net metering (for the Close NM task)
-            upd["responsible_user"] = ecp.get("responsible_user")
-            upd["responsible_user_name"] = ecp.get("responsible_user_name")
+        # NET_METERING: do NOT carry the Installation-stage assignee. Close Net Metering
+        # must first be received by the Installation Manager and explicitly assigned, so
+        # responsible_user / responsible_user_name are cleared (handled by the else block above).
         # create tasks for the new stage from specs (financing-aware, team + requires)
         docs = _tasks_from_specs(ecp["id"], target, bool(ecp.get("financing_required")))
         if docs:
@@ -958,7 +957,14 @@ async def complete_task(ecp_id: str, task_id: str, user: dict = Depends(get_curr
         "completed": True, "completed_by": user["id"], "completed_by_name": user["name"],
         "completed_at": now_iso()}})
     await _maybe_advance(ecp_id, user)
-    return await get_ecp(ecp_id, user)
+    try:
+        return await get_ecp(ecp_id, user)
+    except HTTPException:
+        # Task completion may auto-advance the ECP into a stage no longer visible to this
+        # role (e.g. assigned INSTALLATION_MEMBER completing Close Net Metering -> REGISTRATION_2).
+        # The write succeeded; return a lightweight success payload instead of a spurious 404.
+        fresh = await db.ecps.find_one({"id": ecp_id}, NO_ID)
+        return {"status": "completed", "current_stage": fresh["current_stage"] if fresh else None}
 
 
 @api.post("/ecps/{ecp_id}/start-dispatch")
@@ -995,18 +1001,33 @@ async def assign_installation(ecp_id: str, body: AssignInstallation, user: dict 
     ecp = await db.ecps.find_one({"id": ecp_id}, NO_ID)
     if not ecp:
         raise HTTPException(status_code=404, detail="ECP not found")
-    if ecp["current_stage"] != "INSTALLATION" or ecp.get("install_status") != "AWAITING_ASSIGNMENT":
+    stage = ecp["current_stage"]
+    if stage == "INSTALLATION":
+        if ecp.get("install_status") != "AWAITING_ASSIGNMENT":
+            raise HTTPException(status_code=400, detail="ECP is not awaiting installation assignment")
+    elif stage == "NET_METERING":
+        # Close Net Metering assignment — only after the Request Net Metering prerequisite is done
+        req = await db.ecp_tasks.find_one(
+            {"ecp_id": ecp_id, "task_name": "Request Net Metering from CSPDCL"}, NO_ID)
+        if not req or not req.get("completed"):
+            raise HTTPException(status_code=400, detail="Complete 'Request Net Metering from CSPDCL' before assigning Close Net Metering")
+    else:
         raise HTTPException(status_code=400, detail="ECP is not awaiting installation assignment")
     emp = await db.users.find_one({"id": body.assigned_user}, NO_ID)
     if not emp or emp["role"] not in wf.INSTALL_MEMBER_ROLES or not emp.get("active", True):
         raise HTTPException(status_code=400, detail="Assignee must be an active Installation team member")
-    await db.ecps.update_one({"id": ecp_id}, {"$set": {
-        "responsible_user": emp["id"], "responsible_user_name": emp["name"],
-        "current_team": "INSTALLATION_MEMBER", "install_status": "READY_TO_INSTALL", "updated_at": now_iso()}})
+    upd = {"responsible_user": emp["id"], "responsible_user_name": emp["name"],
+           "current_team": "INSTALLATION_MEMBER", "updated_at": now_iso()}
+    if stage == "INSTALLATION":
+        upd["install_status"] = "READY_TO_INSTALL"
+        note = f"Installation assigned to {emp['name']}"
+    else:
+        note = f"Close Net Metering assigned to {emp['name']}"
+    await db.ecps.update_one({"id": ecp_id}, {"$set": upd})
     await db.ecp_stage_history.insert_one({
-        "id": new_id(), "ecp_id": ecp_id, "from_stage": "INSTALLATION", "to_stage": "INSTALLATION",
+        "id": new_id(), "ecp_id": ecp_id, "from_stage": stage, "to_stage": stage,
         "changed_by": user["id"], "changed_by_name": user["name"], "changed_at": now_iso(),
-        "note": f"Installation assigned to {emp['name']}"})
+        "note": note})
     await log_activity(user, "Installation Assigned", "ECP", ecp_id, ecp.get("lead_name", ""), f"To {emp['name']}")
     return await get_ecp(ecp_id, user)
 
